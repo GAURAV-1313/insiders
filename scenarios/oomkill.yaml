@@ -17,8 +17,19 @@ spec:
     spec:
       containers:
       - name: oom-app
-        image: polinux/stress
-        args: ["--vm", "1", "--vm-bytes", "100M", "--vm-hang", "1"]
+        image: python:3.11-alpine
+        command:
+        - python
+        - -c
+        - |
+          import time
+          blocks = []
+          for _ in range(70):
+              blocks.append(b"x" * 1024 * 1024)
+              time.sleep(0.05)
+          print("allocation complete")
+          while True:
+              time.sleep(60)
         resources:
           requests:
             memory: "50Mi"

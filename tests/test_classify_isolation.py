@@ -21,15 +21,30 @@ HARDCODED_EVENTS = [
 ]
 
 
+def _load_dotenv() -> None:
+    env_path = ROOT / ".env"
+    if not env_path.exists():
+        return
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip())
+
+
 def main() -> None:
-    api_key = os.environ.get("GROQ_API_KEY")
+    _load_dotenv()
+
+    api_key = os.environ.get("GROQ_API_KEY") or os.environ.get("K8SWHISPERER_LLM_API_KEY")
     if not api_key:
         raise RuntimeError("GROQ_API_KEY is not set")
 
     adapter = OpenAICompatibleLLMAdapter(
         api_key=api_key,
-        model="llama-3.1-70b-versatile",
-        base_url="https://api.groq.com/openai/v1",
+        model=os.environ.get("K8SWHISPERER_LLM_MODEL", "llama-3.3-70b-versatile"),
+        base_url=os.environ.get("K8SWHISPERER_LLM_BASE_URL", "https://api.groq.com/openai/v1"),
     )
 
     for index in range(1, 4):

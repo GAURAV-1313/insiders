@@ -19,9 +19,15 @@ class SlackNotifierAdapter(NotifierAdapter):
     - polish the message content
     """
 
-    def __init__(self, webhook_url: str, channel: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        webhook_url: str,
+        channel: Optional[str] = None,
+        public_base_url: Optional[str] = None,
+    ) -> None:
         self.webhook_url = webhook_url
         self.channel = channel
+        self.public_base_url = (public_base_url or "").rstrip("/")
 
     def send_hitl_request(self, state: ClusterState) -> Dict[str, Any]:
         payload = self.build_payload(state)
@@ -51,6 +57,8 @@ class SlackNotifierAdapter(NotifierAdapter):
         anomaly = state["anomalies"][0] if state.get("anomalies") else {}
         plan = state.get("plan", {})
         decision_payload = {"incident_id": state["incident_id"]}
+        approve_url = self._decision_url(state["incident_id"], approved=True)
+        reject_url = self._decision_url(state["incident_id"], approved=False)
 
         payload: Dict[str, Any] = {
             "text": f"K8sWhisperer approval required for incident {state['incident_id']}",
@@ -77,6 +85,7 @@ class SlackNotifierAdapter(NotifierAdapter):
                             "style": "primary",
                             "action_id": "approve_incident",
                             "value": json.dumps({**decision_payload, "approved": True}),
+                            **({"url": approve_url} if approve_url else {}),
                         },
                         {
                             "type": "button",
@@ -84,6 +93,7 @@ class SlackNotifierAdapter(NotifierAdapter):
                             "style": "danger",
                             "action_id": "reject_incident",
                             "value": json.dumps({**decision_payload, "approved": False}),
+                            **({"url": reject_url} if reject_url else {}),
                         },
                     ],
                 },
@@ -93,3 +103,8 @@ class SlackNotifierAdapter(NotifierAdapter):
             payload["channel"] = self.channel
         return payload
 
+    def _decision_url(self, incident_id: str, approved: bool) -> str:
+        if not self.public_base_url:
+            return ""
+        decision = "approve" if approved else "reject"
+        return f"{self.public_base_url}/webhook/slack/{decision}/{incident_id}"
