@@ -5,3 +5,5 @@ __pycache__/
 audit_log.json
 .env
 .pycache/
+config.py
+
