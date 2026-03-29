@@ -48,6 +48,7 @@ def _verify_deployment_healthy(
     sleep: Callable[[int], None],
 ) -> Tuple[bool, Dict[str, object]]:
     latest_state: Dict[str, object] = {"deployment_name": deployment_name, "pods": []}
+    healthy_streak = 0
     for backoff in runtime.settings.verify_backoff_seconds:
         runtime.log(f"[execute] waiting {backoff}s before verification")
         sleep(backoff)
@@ -71,7 +72,14 @@ def _verify_deployment_healthy(
             if pod.get("status") == "Running" and int(pod.get("restart_count", 0)) == 0
         ]
         if healthy:
-            return True, {"deployment_name": deployment_name, "pods": healthy}
+            healthy_streak += 1
+            if healthy_streak >= 2:
+                return True, {"deployment_name": deployment_name, "pods": healthy}
+            runtime.log(
+                f"[execute] healthy deployment candidate found for {deployment_name}; confirming on next poll"
+            )
+            continue
+        healthy_streak = 0
     return False, latest_state
 
 

@@ -56,6 +56,8 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
             "- status is CrashLoopBackOff OR restart_count > 3 \n"
             "  with exit_code not 0 \n"
             "  \u2192 type=CrashLoopBackOff, severity=HIGH\n"
+            "- status is Error and restart_count >= 3 with exit_code not 0 \n"
+            "  \u2192 type=CrashLoopBackOff, severity=HIGH\n"
             "- status is OOMKilled OR exit_code is 137 \n"
             "  \u2192 type=OOMKilled, severity=HIGH  \n"
             "- status is Pending \n"
@@ -86,7 +88,7 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
 
         valid_anomalies: List[Anomaly] = []
         for item in payload:
-            anomaly = self._validate_anomaly(item)
+            anomaly = self._validate_anomaly(item, events)
             if anomaly:
                 valid_anomalies.append(anomaly)
 
@@ -352,7 +354,35 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
 
         return text.strip()
 
-    def _validate_anomaly(self, item: Any) -> Anomaly | None:
+    def _matching_event(self, resource_name: str, events: List[Dict[str, Any]]) -> Dict[str, Any]:
+        for event in events:
+            if event.get("pod_name") == resource_name:
+                return event
+        return {}
+
+    def _normalize_confidence(
+        self,
+        anomaly_type: str,
+        confidence: float,
+        event: Dict[str, Any],
+    ) -> float:
+        status = str(event.get("status", ""))
+        restart_count = int(event.get("restart_count", 0) or 0)
+        exit_code = event.get("exit_code")
+
+        if anomaly_type == "CrashLoopBackOff":
+            if status == "CrashLoopBackOff" or (
+                status == "Error" and restart_count >= 3 and exit_code not in (None, 0)
+            ) or (restart_count >= 3 and exit_code not in (None, 0)):
+                return max(confidence, 0.91)
+        if anomaly_type == "OOMKilled" and (status == "OOMKilled" or exit_code == 137):
+            return max(confidence, 0.95)
+        if anomaly_type == "Pending" and status == "Pending":
+            return max(confidence, 0.99)
+
+        return confidence
+
+    def _validate_anomaly(self, item: Any, events: List[Dict[str, Any]]) -> Anomaly | None:
         if not isinstance(item, dict):
             return None
 
@@ -379,10 +409,13 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
         if not isinstance(confidence, (int, float)):
             return None
 
+        event = self._matching_event(affected_resource, events)
+        confidence = self._normalize_confidence(anomaly_type, float(confidence), event)
+
         return Anomaly(
             type=anomaly_type,
             severity=severity,
             affected_resource=affected_resource,
             namespace=namespace,
-            confidence=float(confidence),
+            confidence=confidence,
         )
