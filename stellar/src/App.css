@@ -1,0 +1,4 @@
+/* Global resets — Tailwind handles the rest */
+* {
+  box-sizing: border-box;
+}
