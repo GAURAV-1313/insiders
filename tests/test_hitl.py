@@ -141,6 +141,26 @@ class HitlTests(unittest.TestCase):
         self.assertEqual(graph.calls[0][1]["configurable"]["thread_id"], "inc-123")
         self.assertEqual(graph.calls[1][1]["configurable"]["thread_id"], "inc-456")
 
+    def test_webhook_post_coerces_string_false(self):
+        class DummyGraph:
+            def __init__(self):
+                self.calls = []
+
+            def invoke(self, command, config):
+                self.calls.append((command, config))
+                return {"ok": True}
+
+        graph = DummyGraph()
+        app = create_webhook_app(graph)
+        client = TestClient(app)
+
+        response = client.post("/webhook/slack", json={"incident_id": "inc-789", "approved": "false"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["approved"], False)
+        self.assertEqual(len(graph.calls), 1)
+        self.assertEqual(graph.calls[0][1]["configurable"]["thread_id"], "inc-789")
+
 
 if __name__ == "__main__":
     unittest.main()

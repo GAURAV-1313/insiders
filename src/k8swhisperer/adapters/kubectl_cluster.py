@@ -38,8 +38,21 @@ class KubectlClusterAdapter(ClusterAdapter):
         return self._run_text(["describe", "pod", pod_name, "-n", namespace])
 
     def restart_pod(self, pod_name: str, namespace: str) -> str:
-        output = self._run_text(["delete", "pod", pod_name, "-n", namespace])
-        return output.strip() or f"pod/{pod_name} deleted"
+        result = self._run_completed(["delete", "pod", pod_name, "-n", namespace])
+        output = (result.stdout or result.stderr).strip()
+        if result.returncode == 0:
+            return output or f"pod/{pod_name} deleted"
+
+        # Slack/HITL resumes may act on a stale pod name after a replacement already exists.
+        # Treat that as a safe no-op and let deployment-level verification decide the outcome.
+        if "NotFound" in output or "not found" in output.lower():
+            return f"pod/{pod_name} already absent; relying on deployment reconciliation"
+
+        raise RuntimeError(
+            f"kubectl command failed: delete pod {pod_name} -n {namespace}\n"
+            f"stdout: {result.stdout}\n"
+            f"stderr: {result.stderr}"
+        )
 
     def patch_memory_limit(self, pod_name: str, namespace: str, memory_limit: str) -> str:
         deployment_name = self._resolve_owner_deployment(pod_name, namespace)
@@ -160,25 +173,23 @@ class KubectlClusterAdapter(ClusterAdapter):
         return "\n".join(combined)
 
     def _run_logs_command(self, args: List[str]) -> str:
-        result = subprocess.run(
-            [self.kubectl_bin, *args],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
+        result = self._run_completed(args)
         return result.stdout if result.returncode == 0 else ""
 
     def _run_json(self, args: List[str]) -> Dict[str, Any]:
         output = self._run_text(args)
         return json.loads(output)
 
-    def _run_text(self, args: List[str], allow_nonzero: bool = False) -> str:
-        result = subprocess.run(
+    def _run_completed(self, args: List[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
             [self.kubectl_bin, *args],
             check=False,
             capture_output=True,
             text=True,
         )
+
+    def _run_text(self, args: List[str], allow_nonzero: bool = False) -> str:
+        result = self._run_completed(args)
         if result.returncode != 0 and not allow_nonzero:
             raise RuntimeError(
                 f"kubectl command failed: {' '.join(args)}\n"

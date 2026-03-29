@@ -24,6 +24,13 @@ def create_webhook_app(graph: Any) -> Any:
 
     app = FastAPI()
 
+    def _coerce_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
     def _resume_incident(incident_id: str, approved: bool) -> Dict[str, Any]:
         graph.invoke(
             Command(resume={"approved": approved}),
@@ -34,12 +41,25 @@ def create_webhook_app(graph: Any) -> Any:
     @app.post("/webhook/slack")
     def slack_callback(payload: Dict[str, Any]) -> Dict[str, Any]:
         incident_id = payload["incident_id"]
-        approved = bool(payload.get("approved", False))
+        approved = _coerce_bool(payload.get("approved", False))
         return _resume_incident(incident_id, approved)
 
     @app.get("/webhook/slack/approve/{incident_id}", response_class=HTMLResponse)
     def slack_approve(incident_id: str) -> HTMLResponse:
-        _resume_incident(incident_id, True)
+        try:
+            _resume_incident(incident_id, True)
+        except Exception as exc:
+            return HTMLResponse(
+                _decision_page(
+                    title="Approval Failed",
+                    body=(
+                        f"Incident <code>{incident_id}</code> could not be resumed. "
+                        f"Details: <code>{exc}</code>"
+                    ),
+                    accent="#dc2626",
+                ),
+                status_code=500,
+            )
         return HTMLResponse(
             _decision_page(
                 title="Approval Recorded",
@@ -53,7 +73,20 @@ def create_webhook_app(graph: Any) -> Any:
 
     @app.get("/webhook/slack/reject/{incident_id}", response_class=HTMLResponse)
     def slack_reject(incident_id: str) -> HTMLResponse:
-        _resume_incident(incident_id, False)
+        try:
+            _resume_incident(incident_id, False)
+        except Exception as exc:
+            return HTMLResponse(
+                _decision_page(
+                    title="Rejection Failed",
+                    body=(
+                        f"Incident <code>{incident_id}</code> could not be resumed. "
+                        f"Details: <code>{exc}</code>"
+                    ),
+                    accent="#dc2626",
+                ),
+                status_code=500,
+            )
         return HTMLResponse(
             _decision_page(
                 title="Rejection Recorded",
