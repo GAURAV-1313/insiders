@@ -66,10 +66,17 @@ def build_runtime_from_env() -> Runtime:
 
     if use_real_adapters:
         kubectl_bin = os.getenv("K8SWHISPERER_KUBECTL_BIN", "kubectl")
+        slack_webhook_url = os.getenv("K8SWHISPERER_SLACK_WEBHOOK_URL", "")
+        slack_channel = os.getenv("K8SWHISPERER_SLACK_CHANNEL")
+        public_base_url = os.getenv("K8SWHISPERER_PUBLIC_BASE_URL", "")
         return Runtime(
             cluster=KubectlClusterAdapter(kubectl_bin=kubectl_bin),
             llm=_ClusterSchemaFixtureLLMAdapter(),
-            notifier=FixtureNotifierAdapter(),
+            notifier=SlackNotifierAdapter(
+                webhook_url=slack_webhook_url,
+                channel=slack_channel,
+                public_base_url=public_base_url,
+            ),
             settings=settings,
             sleep=time.sleep,
             log=_log,
