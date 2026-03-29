@@ -86,9 +86,19 @@ def build_runtime_from_env() -> Runtime:
         )
 
     kubectl_bin = os.getenv("K8SWHISPERER_KUBECTL_BIN", "kubectl")
-    llm_api_key = os.getenv("K8SWHISPERER_LLM_API_KEY", "")
-    llm_model = os.getenv("K8SWHISPERER_LLM_MODEL", "")
-    llm_base_url = os.getenv("K8SWHISPERER_LLM_BASE_URL", "")
+    # Groq fallback: if K8SWHISPERER_LLM_* vars are not set, use GROQ_API_KEY
+    llm_api_key = (
+        os.getenv("K8SWHISPERER_LLM_API_KEY")
+        or os.getenv("GROQ_API_KEY", "")
+    )
+    llm_model = (
+        os.getenv("K8SWHISPERER_LLM_MODEL")
+        or "llama-3.3-70b-versatile"
+    )
+    llm_base_url = (
+        os.getenv("K8SWHISPERER_LLM_BASE_URL")
+        or "https://api.groq.com/openai/v1"
+    )
     slack_webhook_url = os.getenv("K8SWHISPERER_SLACK_WEBHOOK_URL", "")
     slack_channel = os.getenv("K8SWHISPERER_SLACK_CHANNEL")
 

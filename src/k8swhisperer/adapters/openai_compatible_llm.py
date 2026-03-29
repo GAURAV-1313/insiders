@@ -93,37 +93,197 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
         return valid_anomalies
 
     def diagnose(self, anomaly: Anomaly, logs: str, description: str, events: List[Dict[str, Any]]) -> str:
-        """TODO Person 3.
+        """Return a concise evidence-backed root cause string."""
 
-        Expected output: one concise evidence-backed diagnosis string.
-        """
+        log_lines = logs.strip().splitlines()
+        if len(log_lines) > 100:
+            logs = "[Showing last 100 lines]\n" + "\n".join(log_lines[-100:])
 
-        raise NotImplementedError("Person 3: implement diagnose() in openai_compatible_llm.py")
+        system_prompt = (
+            "You are the root cause analysis component of a Kubernetes incident response agent. "
+            "You will receive an anomaly, pod logs, kubectl describe output, and recent events. "
+            "Return a single plain-English paragraph (3-5 sentences maximum). "
+            "Cite specific evidence from the logs or describe output — quote relevant lines. "
+            "State the most likely root cause first, then supporting evidence. "
+            "If logs are empty or uninformative, say so explicitly. "
+            "Do not use markdown. Do not use JSON. Return plain text only."
+        )
+        user_prompt = (
+            f"Anomaly:\n{json.dumps(anomaly, indent=2)}\n\n"
+            f"Pod logs (last 100 lines):\n{logs or '(no logs available)'}\n\n"
+            f"kubectl describe output:\n{description or '(no describe output available)'}\n\n"
+            f"Recent events:\n{json.dumps(events, indent=2)}\n\n"
+            "Write the root cause diagnosis now."
+        )
+
+        response = self._client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.2,
+        )
+        return (response.choices[0].message.content or "").strip()
 
     def plan(self, anomaly: Anomaly, diagnosis: str) -> RemediationPlan:
-        """TODO Person 3.
+        """Propose a RemediationPlan using the repo schema (action, params, blast_radius)."""
 
-        Expected output example:
-        {
-          "action": "restart_pod",
-          "target_resource": "payment-api-123",
-          "namespace": "production",
-          "params": {},
-          "confidence": 0.91,
-          "blast_radius": "low",
-          "reason": "Transient crash loop likely resolved by pod restart."
-        }
-        """
+        system_prompt = (
+            "You are the remediation planner for a Kubernetes incident response agent. "
+            "Return only valid JSON. No markdown. No code fences. No explanation outside the JSON.\n\n"
+            "Required fields:\n"
+            "  action: one of exactly: restart_pod, patch_memory_limit, explain_only\n"
+            "  target_resource: the exact pod or deployment name to act on\n"
+            "  namespace: the Kubernetes namespace\n"
+            "  params: a dict of action-specific parameters\n"
+            "  confidence: float 0.0-1.0\n"
+            "  blast_radius: one of exactly: low, medium, high\n"
+            "  reason: one sentence explaining why this action addresses the root cause\n\n"
+            "Action selection rules:\n"
+            "  CrashLoopBackOff -> action=restart_pod, blast_radius=low, params={}\n"
+            "  OOMKilled -> action=patch_memory_limit, blast_radius=low, "
+            "params={\"memory_limit\": \"<current+50%>\"}\n"
+            "  Pending -> action=explain_only, blast_radius=low, params={}\n\n"
+            "For OOMKilled: set memory_limit to 384Mi if current limit is unknown."
+        )
+        user_prompt = (
+            f"Anomaly:\n{json.dumps(anomaly, indent=2)}\n\n"
+            f"Root cause diagnosis:\n{diagnosis}\n\n"
+            "Return the remediation plan JSON now."
+        )
 
-        raise NotImplementedError("Person 3: implement plan() in openai_compatible_llm.py")
+        response = self._client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.1,
+        )
+        raw = self._strip_code_fences((response.choices[0].message.content or "").strip())
+
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("plan() could not parse JSON: %s", raw)
+            return self._fallback_plan(anomaly)
+
+        return self._validate_plan(data, anomaly)
 
     def explain(self, state: ClusterState) -> str:
-        """TODO Person 3.
+        """Return a single plain-English incident summary string."""
 
-        Expected output: a plain-English incident summary suitable for judges and audit logs.
-        """
+        anomaly = state["anomalies"][0] if state.get("anomalies") else {}
+        plan = state.get("plan", {})
+        approved = state.get("approved")
+        result = state.get("result", "")
+        diagnosis = state.get("diagnosis", "")
 
-        raise NotImplementedError("Person 3: implement explain() in openai_compatible_llm.py")
+        if state.get("execution_status") in ("awaiting_approval", "rejected"):
+            action_path = "sent for human approval (HITL)"
+        elif approved is True:
+            action_path = "approved by human and executed"
+        elif approved is False:
+            action_path = "rejected by human — no action taken"
+        else:
+            action_path = "auto-executed"
+
+        system_prompt = (
+            "You are the explanation writer for a Kubernetes incident response agent. "
+            "Write a clear, concise incident summary a non-expert on-call engineer can understand at 3am. "
+            "Format: What happened -> Why -> What was done -> Current status. "
+            "3-5 sentences. Plain text only. No markdown. No JSON. No bullet points."
+        )
+        user_prompt = (
+            f"Anomaly: {json.dumps(anomaly)}\n"
+            f"Root cause: {diagnosis}\n"
+            f"Plan: action={plan.get('action', 'unknown')}, "
+            f"target={plan.get('target_resource', 'unknown')}, "
+            f"blast_radius={plan.get('blast_radius', 'unknown')}\n"
+            f"Action path: {action_path}\n"
+            f"Execution result: {result or 'not yet executed'}\n\n"
+            "Write the incident summary now."
+        )
+
+        response = self._client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.3,
+        )
+        return (response.choices[0].message.content or "").strip()
+
+    def _fallback_plan(self, anomaly: Anomaly) -> RemediationPlan:
+        """Return a safe default plan when LLM output cannot be parsed."""
+        anomaly_type = anomaly.get("type", "")
+        if anomaly_type == "OOMKilled":
+            return RemediationPlan(
+                action="patch_memory_limit",
+                target_resource=anomaly.get("affected_resource", "unknown"),
+                namespace=anomaly.get("namespace", "default"),
+                params={"memory_limit": "384Mi"},
+                confidence=0.7,
+                blast_radius="low",
+                reason="OOMKilled — increasing memory limit by 50% as safe default.",
+            )
+        if anomaly_type == "Pending":
+            return RemediationPlan(
+                action="explain_only",
+                target_resource=anomaly.get("affected_resource", "unknown"),
+                namespace=anomaly.get("namespace", "default"),
+                params={},
+                confidence=0.8,
+                blast_radius="low",
+                reason="Pending pod — human review required.",
+            )
+        return RemediationPlan(
+            action="restart_pod",
+            target_resource=anomaly.get("affected_resource", "unknown"),
+            namespace=anomaly.get("namespace", "default"),
+            params={},
+            confidence=0.7,
+            blast_radius="low",
+            reason="CrashLoopBackOff — restarting pod as safe default.",
+        )
+
+    def _validate_plan(self, data: dict, anomaly: Anomaly) -> RemediationPlan:
+        """Parse LLM plan output and enforce repo schema."""
+        valid_actions = {"restart_pod", "patch_memory_limit", "explain_only"}
+        valid_blast = {"low", "medium", "high"}
+
+        action = data.get("action", "")
+        if action not in valid_actions:
+            logger.warning("plan() returned invalid action %r, using fallback", action)
+            return self._fallback_plan(anomaly)
+
+        blast_radius = data.get("blast_radius", "low")
+        if blast_radius not in valid_blast:
+            blast_radius = "low"
+
+        confidence = data.get("confidence", 0.7)
+        if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
+            confidence = 0.7
+
+        params = data.get("params", {})
+        if not isinstance(params, dict):
+            params = {}
+
+        # Enforce OOMKilled must have memory_limit in params
+        if action == "patch_memory_limit" and "memory_limit" not in params:
+            params["memory_limit"] = "384Mi"
+
+        return RemediationPlan(
+            action=action,
+            target_resource=data.get("target_resource", anomaly.get("affected_resource", "unknown")),
+            namespace=data.get("namespace", anomaly.get("namespace", "default")),
+            params=params,
+            confidence=float(confidence),
+            blast_radius=blast_radius,
+            reason=data.get("reason", ""),
+        )
 
     def chat_text(self, messages: List[Dict[str, str]], temperature: float = 0.0) -> str:
         payload = {
