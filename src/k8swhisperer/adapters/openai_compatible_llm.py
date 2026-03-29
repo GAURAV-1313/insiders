@@ -103,10 +103,16 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
             "You are the root cause analysis component of a Kubernetes incident response agent. "
             "You will receive an anomaly, pod logs, kubectl describe output, and recent events. "
             "Return a single plain-English paragraph (3-5 sentences maximum). "
-            "Cite specific evidence from the logs or describe output — quote relevant lines. "
-            "State the most likely root cause first, then supporting evidence. "
-            "If logs are empty or uninformative, say so explicitly. "
-            "Do not use markdown. Do not use JSON. Return plain text only."
+            "State the most likely root cause first, then cite specific evidence — quote exact log lines or describe fields. "
+            "If logs are empty or uninformative, say so explicitly instead of inventing evidence. "
+            "Do not use markdown. Do not use JSON. Return plain text only.\n\n"
+            "GOOD example: "
+            "'The pod is crash-looping because the DATABASE_URL environment variable is missing. "
+            "Logs show KeyError: DATABASE_URL at app.py line 42, and the pod exits with code 1 within 2 seconds of starting. "
+            "The describe output confirms restartCount=7 with lastState.terminated.reason=Error. "
+            "The ConfigMap referenced in the deployment spec likely does not contain this key.'\n\n"
+            "BAD example (do not do this): "
+            "'The pod is having issues. There might be a configuration problem causing it to crash.'"
         )
         user_prompt = (
             f"Anomaly:\n{json.dumps(anomaly, indent=2)}\n\n"
@@ -126,6 +132,19 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
         )
         return (response.choices[0].message.content or "").strip()
 
+    @staticmethod
+    def _extract_memory_limit(diagnosis: str) -> str:
+        """Try to parse current memory limit from diagnosis text, e.g. '256Mi' → '384Mi'."""
+        import re
+        match = re.search(r'(\d+)(Mi|Gi)', diagnosis)
+        if match:
+            value, unit = int(match.group(1)), match.group(2)
+            if unit == "Gi":
+                value *= 1024
+            new_value = int(value * 1.5)
+            return f"{new_value}Mi"
+        return "384Mi"
+
     def plan(self, anomaly: Anomaly, diagnosis: str) -> RemediationPlan:
         """Propose a RemediationPlan using the repo schema (action, params, blast_radius)."""
 
@@ -142,10 +161,11 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
             "  reason: one sentence explaining why this action addresses the root cause\n\n"
             "Action selection rules:\n"
             "  CrashLoopBackOff -> action=restart_pod, blast_radius=low, params={}\n"
-            "  OOMKilled -> action=patch_memory_limit, blast_radius=low, "
-            "params={\"memory_limit\": \"<current+50%>\"}\n"
+            f"  OOMKilled -> action=patch_memory_limit, blast_radius=low, "
+            f"params={{\"memory_limit\": \"{self._extract_memory_limit(diagnosis)}\"}}\n"
             "  Pending -> action=explain_only, blast_radius=low, params={}\n\n"
-            "For OOMKilled: set memory_limit to 384Mi if current limit is unknown."
+            f"For OOMKilled: use memory_limit={self._extract_memory_limit(diagnosis)} "
+            "(extracted from diagnosis — current limit + 50%)."
         )
         user_prompt = (
             f"Anomaly:\n{json.dumps(anomaly, indent=2)}\n\n"
@@ -192,8 +212,17 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
         system_prompt = (
             "You are the explanation writer for a Kubernetes incident response agent. "
             "Write a clear, concise incident summary a non-expert on-call engineer can understand at 3am. "
-            "Format: What happened -> Why -> What was done -> Current status. "
-            "3-5 sentences. Plain text only. No markdown. No JSON. No bullet points."
+            "Use this exact structure: "
+            "(1) What happened — name the pod and anomaly type. "
+            "(2) Why — the root cause in one sentence. "
+            "(3) What was done — the action taken and who approved it. "
+            "(4) Current status — is it resolved, pending, or rejected. "
+            "3-5 sentences total. Plain text only. No markdown. No JSON. No bullet points.\n\n"
+            "GOOD example: "
+            "'The api-deployment-7d9f8b pod in namespace production crashed 7 times due to a missing DATABASE_URL "
+            "environment variable. The agent diagnosed the root cause from log line: KeyError: DATABASE_URL at app.py:42. "
+            "The pod was automatically restarted and recovered to Running state within 45 seconds. "
+            "No human approval was required as blast radius was low and confidence was 0.95.'"
         )
         user_prompt = (
             f"Anomaly: {json.dumps(anomaly)}\n"
