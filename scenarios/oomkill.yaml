@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oom-app
+  namespace: production
+  labels:
+    scenario: oomkill
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oom-app
+  template:
+    metadata:
+      labels:
+        app: oom-app
+    spec:
+      containers:
+      - name: oom-container
+        image: python:3.9-slim
+        command: ["python3", "-c", "data=[]; [data.append('x'*100000) for _ in range(10000)]"]
+        resources:
+          requests:
+            memory: "10Mi"
+          limits:
+            memory: "20Mi"
+            cpu: "100m"

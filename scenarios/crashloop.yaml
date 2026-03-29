@@ -1,23 +1,28 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: payment-api
+  name: crash-app
   namespace: production
+  labels:
+    scenario: crashloop
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: payment-api
+      app: crash-app
   template:
     metadata:
       labels:
-        app: payment-api
+        app: crash-app
     spec:
       containers:
-        - name: payment-api
-          image: busybox
-          command: ["sh", "-c", "echo starting && sleep 2 && exit 1"]
-          resources:
-            limits:
-              memory: "64Mi"
-              cpu: "100m"
+      - name: crash-container
+        image: busybox:latest
+        command:
+        - "/bin/sh"
+        - "-c"
+        - "echo 'App starting...' && echo 'ERROR: Database connection refused at db:5432' && exit 1"
+        resources:
+          limits:
+            memory: "64Mi"
+            cpu: "100m"
