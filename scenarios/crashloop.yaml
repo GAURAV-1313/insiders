@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-api
+  namespace: production
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: payment-api
+  template:
+    metadata:
+      labels:
+        app: payment-api
+    spec:
+      containers:
+        - name: payment-api
+          image: busybox
+          command: ["sh", "-c", "echo starting && sleep 2 && exit 1"]
+          resources:
+            limits:
+              memory: "64Mi"
+              cpu: "100m"
