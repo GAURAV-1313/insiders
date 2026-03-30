@@ -90,6 +90,74 @@ class KubectlClusterAdapter(ClusterAdapter):
             "reason": status.get("reason", "") or self._extract_waiting_reason(container_statuses),
         }
 
+    def patch_cpu_limit(self, pod_name: str, namespace: str, cpu_limit: str) -> str:
+        """Increase CPU limit on the owning Deployment — similar to patch_memory_limit."""
+        deployment_name = self._resolve_owner_deployment(pod_name, namespace)
+        output = self._run_text(
+            [
+                "set",
+                "resources",
+                f"deployment/{deployment_name}",
+                "-n",
+                namespace,
+                f"--limits=cpu={cpu_limit}",
+            ]
+        )
+        return output.strip() or f"deployment/{deployment_name} patched with cpu={cpu_limit}"
+
+    def scan_deployments(self, namespace: str) -> List[Dict[str, Any]]:
+        """Return deployment-level events for DeploymentStalled detection."""
+        data = self._run_json(["get", "deployments", "-n", namespace, "-o", "json"], timeout=15)
+        events: List[Dict[str, Any]] = []
+        for item in data.get("items", []):
+            metadata = item.get("metadata", {})
+            spec = item.get("spec", {})
+            status = item.get("status", {})
+            desired = spec.get("replicas", 0)
+            updated = status.get("updatedReplicas", 0) or 0
+            available = status.get("availableReplicas", 0) or 0
+            stalled = desired > 0 and updated != desired
+            events.append({
+                "kind": "deployment",
+                "resource_name": metadata.get("name", ""),
+                "namespace": metadata.get("namespace", namespace),
+                "replicas": desired,
+                "updatedReplicas": updated,
+                "availableReplicas": available,
+                "stalled": stalled,
+            })
+        return events
+
+    def scan_nodes(self) -> List[Dict[str, Any]]:
+        """Return node conditions for NodeNotReady detection."""
+        data = self._run_json(["get", "nodes", "-o", "json"], timeout=15)
+        events: List[Dict[str, Any]] = []
+        for item in data.get("items", []):
+            metadata = item.get("metadata", {})
+            conditions = item.get("status", {}).get("conditions", [])
+            node_ready = True
+            for cond in conditions:
+                if cond.get("type") == "Ready":
+                    node_ready = cond.get("status") == "True"
+                    break
+            events.append({
+                "kind": "node",
+                "resource_name": metadata.get("name", ""),
+                "namespace": "",
+                "node_ready": node_ready,
+            })
+        return events
+
+    def get_node_status(self, node_name: str) -> Dict[str, Any]:
+        """Return node conditions and describe output for NodeNotReady handling."""
+        data = self._run_json(["get", "node", node_name, "-o", "json"])
+        conditions = data.get("status", {}).get("conditions", [])
+        describe = self._run_text(["describe", "node", node_name], allow_nonzero=True)
+        return {
+            "conditions": conditions,
+            "describe": describe[:2000],  # Truncate to avoid LLM overflow
+        }
+
     def _resolve_owner_deployment(self, pod_name: str, namespace: str) -> str:
         pod = self._run_json(["get", "pod", pod_name, "-n", namespace, "-o", "json"])
         owners = pod.get("metadata", {}).get("ownerReferences", []) or []

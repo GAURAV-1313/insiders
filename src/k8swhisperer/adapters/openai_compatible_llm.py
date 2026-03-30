@@ -16,7 +16,10 @@ from k8swhisperer.state import Anomaly, ClusterState, RemediationPlan
 
 logger = logging.getLogger(__name__)
 
-VALID_TYPES = {"CrashLoopBackOff", "OOMKilled", "Pending", "ImagePullBackOff", "Evicted"}
+VALID_TYPES = {
+    "CrashLoopBackOff", "OOMKilled", "Pending", "ImagePullBackOff", "Evicted",
+    "CPUThrottling", "DeploymentStalled", "NodeNotReady",
+}
 VALID_SEVERITIES = {"HIGH", "MED", "LOW", "CRITICAL"}
 
 
@@ -49,9 +52,9 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
             "Classify anomalous pods from these events.\n"
             "Return a JSON array only. Each object must have exactly \n"
             "these fields and no others:\n"
-            "  type: one of exactly: CrashLoopBackOff, OOMKilled, Pending, ImagePullBackOff, Evicted\n"
+            "  type: one of exactly: CrashLoopBackOff, OOMKilled, Pending, ImagePullBackOff, Evicted, CPUThrottling, DeploymentStalled, NodeNotReady\n"
             "  severity: one of exactly: HIGH, MED, LOW, CRITICAL\n"
-            "  affected_resource: copy the pod_name value exactly\n"
+            "  affected_resource: copy the pod_name or resource_name value exactly\n"
             "  namespace: copy the namespace value exactly\n"
             "  confidence: a float between 0.0 and 1.0\n\n"
             "Rules:\n"
@@ -68,6 +71,12 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
             "  \u2192 type=ImagePullBackOff, severity=HIGH\n"
             "- status is Evicted \n"
             "  \u2192 type=Evicted, severity=MED\n"
+            "- kind is 'deployment' and stalled is true (updatedReplicas != replicas for >10 min)\n"
+            "  \u2192 type=DeploymentStalled, severity=HIGH\n"
+            "- kind is 'node' and node_ready is false\n"
+            "  \u2192 type=NodeNotReady, severity=CRITICAL\n"
+            "- cpu_throttled_ratio > 0.5 OR status contains 'Throttling'\n"
+            "  \u2192 type=CPUThrottling, severity=MED\n"
             "- if nothing is anomalous return []\n\n"
             f"Events:\n{events_json}"
         )
@@ -161,6 +170,17 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
             return f"{new_value}Mi"
         return "384Mi"
 
+    @staticmethod
+    def _extract_cpu_limit(diagnosis: str) -> str:
+        """Try to parse current CPU limit from diagnosis text, e.g. '250m' → '375m'."""
+        import re
+        match = re.search(r'(\d+)m', diagnosis)
+        if match:
+            value = int(match.group(1))
+            new_value = int(value * 1.5)
+            return f"{new_value}m"
+        return "500m"
+
     def plan(self, anomaly: Anomaly, diagnosis: str) -> RemediationPlan:
         """Propose a RemediationPlan using the repo schema (action, params, blast_radius)."""
 
@@ -168,7 +188,7 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
             "You are the remediation planner for a Kubernetes incident response agent. "
             "Return only valid JSON. No markdown. No code fences. No explanation outside the JSON.\n\n"
             "Required fields:\n"
-            "  action: one of exactly: restart_pod, patch_memory_limit, delete_pod, explain_only\n"
+            "  action: one of exactly: restart_pod, patch_memory_limit, delete_pod, explain_only, patch_cpu_limit, rollback_deployment, log_node_metrics\n"
             "  target_resource: the exact pod or deployment name to act on\n"
             "  namespace: the Kubernetes namespace\n"
             "  params: a dict of action-specific parameters\n"
@@ -183,8 +203,17 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
             "  ImagePullBackOff -> action=explain_only, blast_radius=low, params={}\n"
             "    reason: image cannot be pulled; requires human to fix image tag or registry credentials\n"
             "  Evicted -> action=delete_pod, blast_radius=low, params={}\n"
-            "    reason: evicted pods are already stopped; deletion cleans up the dead resource\n\n"
+            "    reason: evicted pods are already stopped; deletion cleans up the dead resource\n"
+            f"  CPUThrottling -> action=patch_cpu_limit, blast_radius=low, "
+            f"params={{\"cpu_limit\": \"{self._extract_cpu_limit(diagnosis)}\"}}\n"
+            "    reason: container is CPU-throttled; increasing CPU limit to reduce throttling\n"
+            "  DeploymentStalled -> action=rollback_deployment, blast_radius=high, params={}\n"
+            "    reason: rollout is stuck; rollback requires human approval (HITL)\n"
+            "  NodeNotReady -> action=log_node_metrics, blast_radius=high, params={}\n"
+            "    reason: node is NotReady; NEVER auto-drain — log metrics and escalate to human\n\n"
             f"For OOMKilled: use memory_limit={self._extract_memory_limit(diagnosis)} "
+            "(extracted from diagnosis — current limit + 50%).\n"
+            f"For CPUThrottling: use cpu_limit={self._extract_cpu_limit(diagnosis)} "
             "(extracted from diagnosis — current limit + 50%)."
         )
         user_prompt = (
@@ -315,6 +344,36 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
                 blast_radius="low",
                 reason="Evicted pod — deleting dead resource to clean up.",
             )
+        if anomaly_type == "CPUThrottling":
+            return RemediationPlan(
+                action="patch_cpu_limit",
+                target_resource=resource,
+                namespace=namespace,
+                params={"cpu_limit": "500m"},
+                confidence=0.90,
+                blast_radius="low",
+                reason="CPU throttling detected — increasing CPU limit by 50%.",
+            )
+        if anomaly_type == "DeploymentStalled":
+            return RemediationPlan(
+                action="rollback_deployment",
+                target_resource=resource,
+                namespace=namespace,
+                params={},
+                confidence=0.85,
+                blast_radius="high",
+                reason="Deployment stalled — rollback requires human approval.",
+            )
+        if anomaly_type == "NodeNotReady":
+            return RemediationPlan(
+                action="log_node_metrics",
+                target_resource=resource,
+                namespace=namespace,
+                params={},
+                confidence=0.80,
+                blast_radius="high",
+                reason="Node NotReady — CRITICAL. Logging metrics for human review. Never auto-drain.",
+            )
         return RemediationPlan(
             action="restart_pod",
             target_resource=resource,
@@ -349,6 +408,17 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
             elif status == "Pending":
                 anomalies.append(Anomaly(type="Pending", severity="MED",
                     affected_resource=pod, namespace=ns, confidence=0.99))
+            # New anomaly types from deployment/node events
+            kind = event.get("kind", "pod")
+            if kind == "deployment" and event.get("stalled"):
+                anomalies.append(Anomaly(type="DeploymentStalled", severity="HIGH",
+                    affected_resource=event.get("resource_name", pod), namespace=ns, confidence=0.92))
+            elif kind == "node" and event.get("node_ready") is False:
+                anomalies.append(Anomaly(type="NodeNotReady", severity="CRITICAL",
+                    affected_resource=event.get("resource_name", pod), namespace=ns, confidence=0.99))
+            elif event.get("cpu_throttled_ratio", 0) > 0.5:
+                anomalies.append(Anomaly(type="CPUThrottling", severity="MED",
+                    affected_resource=pod, namespace=ns, confidence=0.90))
         return anomalies
 
     def _fallback_diagnosis(self, anomaly: Anomaly) -> str:
@@ -362,6 +432,9 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
             "Pending": "pod cannot be scheduled; likely insufficient cluster resources or a node selector mismatch",
             "ImagePullBackOff": "container image cannot be pulled; check the image name, tag, and registry credentials",
             "Evicted": "pod was evicted by the kubelet due to node resource pressure",
+            "CPUThrottling": "container is being CPU-throttled; current CPU limit is too low for workload demand",
+            "DeploymentStalled": "deployment rollout is stalled; updatedReplicas does not match desired replicas for >10 min",
+            "NodeNotReady": "node is in NotReady state; kubelet may be unresponsive or node has resource pressure",
         }.get(t, "anomalous state detected")
         return (
             f"The pod {r} is in a {t} state ({sev} severity). "
@@ -388,7 +461,10 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
 
     def _validate_plan(self, data: dict, anomaly: Anomaly) -> RemediationPlan:
         """Parse LLM plan output and enforce repo schema."""
-        valid_actions = {"restart_pod", "patch_memory_limit", "delete_pod", "explain_only"}
+        valid_actions = {
+            "restart_pod", "patch_memory_limit", "delete_pod", "explain_only",
+            "patch_cpu_limit", "rollback_deployment", "log_node_metrics",
+        }
         valid_blast = {"low", "medium", "high"}
 
         action = data.get("action", "")
@@ -411,6 +487,9 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
         # Enforce OOMKilled must have memory_limit in params
         if action == "patch_memory_limit" and "memory_limit" not in params:
             params["memory_limit"] = "384Mi"
+        # Enforce CPUThrottling must have cpu_limit in params
+        if action == "patch_cpu_limit" and "cpu_limit" not in params:
+            params["cpu_limit"] = "500m"
 
         return RemediationPlan(
             action=action,
@@ -488,6 +567,12 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
         if anomaly_type == "ImagePullBackOff" and status in ("ImagePullBackOff", "ErrImagePull"):
             return max(confidence, 0.97)
         if anomaly_type == "Evicted" and status == "Evicted":
+            return max(confidence, 0.99)
+        if anomaly_type == "CPUThrottling" and event.get("cpu_throttled_ratio", 0) > 0.5:
+            return max(confidence, 0.90)
+        if anomaly_type == "DeploymentStalled" and event.get("stalled"):
+            return max(confidence, 0.92)
+        if anomaly_type == "NodeNotReady" and event.get("node_ready") is False:
             return max(confidence, 0.99)
 
         return confidence

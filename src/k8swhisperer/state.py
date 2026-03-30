@@ -9,7 +9,15 @@ from uuid import uuid4
 
 Severity = Literal["LOW", "MED", "HIGH", "CRITICAL"]
 BlastRadius = Literal["low", "medium", "high"]
-ActionName = Literal["restart_pod", "patch_memory_limit", "delete_pod", "explain_only"]
+ActionName = Literal[
+    "restart_pod",
+    "patch_memory_limit",
+    "delete_pod",
+    "explain_only",
+    "patch_cpu_limit",
+    "rollback_deployment",
+    "log_node_metrics",
+]
 ExecutionStatus = Literal[
     "pending",
     "awaiting_approval",

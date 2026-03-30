@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stalled-deploy
+  namespace: production
+  labels:
+    scenario: deployment-stalled
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: stalled-deploy
+  template:
+    metadata:
+      labels:
+        app: stalled-deploy
+    spec:
+      containers:
+      - name: app
+        image: nginx:nonexistent-tag-999
+        resources:
+          limits:
+            memory: "64Mi"
+            cpu: "100m"

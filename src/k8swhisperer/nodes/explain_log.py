@@ -41,8 +41,9 @@ def _submit_to_stellar(entry: dict, audit_log_path: str) -> None:
 
 
 def run(state: ClusterState, runtime: Runtime) -> ClusterState:
-    runtime.log("[explain_and_log] generating human-readable summary")
+    runtime.log("[explain] generating human-readable summary")
     state["explanation"] = runtime.llm.explain(state)
+    runtime.log(f"[explain] {state['explanation'][:150]}...")
     entry = new_log_entry(state)
     # Always load from disk so multi-anomaly dispatch accumulates entries correctly
     from k8swhisperer.audit import load_audit_log

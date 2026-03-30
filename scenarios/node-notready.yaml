@@ -1,0 +1,21 @@
+# NodeNotReady scenario
+# In a real multi-node cluster, a NotReady node is detected automatically
+# by the observe stage via: kubectl get nodes -o json
+# For single-node minikube demos, this scenario is validated via:
+#   - Unit tests (test_new_anomaly_types.py)
+#   - Fixture-mode events injected into the pipeline
+# The pipeline ALWAYS routes NodeNotReady to HITL (never auto-drains)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: node-notready-scenario
+  namespace: production
+data:
+  description: |
+    Demonstrates HITL-only routing for node failures.
+    K8sWhisperer detects NodeNotReady via conditions[Ready]=False
+    and ALWAYS escalates to human approval. The agent will never
+    auto-drain or cordon a node — this is a CRITICAL severity event.
+  trigger: "conditions[Ready] = False"
+  expected_action: "log_node_metrics (HITL only)"
+  severity: "CRITICAL"

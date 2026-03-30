@@ -102,18 +102,33 @@ def _watch_explanations(stop_event: threading.Event) -> None:
             seen_ids.add(incident_id)
             anomaly = entry.get("anomaly", {})
             plan = entry.get("plan", {})
-            _print("\n[demo][summary] new incident logged")
-            _print(f"[demo][summary] incident: {incident_id}")
-            _print(
-                f"[demo][summary] anomaly: {anomaly.get('type', 'unknown')} "
-                f"on {anomaly.get('affected_resource', 'unknown')}"
-            )
-            _print(
-                f"[demo][summary] plan: {plan.get('action', 'unknown')} "
-                f"(blast={plan.get('blast_radius', 'unknown')})"
-            )
-            _print(f"[demo][summary] result: {entry.get('result', '')}")
-            _print(f"[demo][summary] explanation: {entry.get('explanation', '')}\n")
+            exec_status = entry.get("execution_status", "")
+            atype = anomaly.get("type", "unknown")
+            severity = anomaly.get("severity", "?")
+            resource = anomaly.get("affected_resource", "unknown")
+
+            if exec_status == "verified":
+                tag = "[RESOLVED]"
+            elif exec_status == "awaiting_approval":
+                tag = "[AWAITING APPROVAL]"
+            elif exec_status == "rejected":
+                tag = "[REJECTED]"
+            elif exec_status == "explained":
+                tag = "[EXPLAINED]"
+            else:
+                tag = f"[{exec_status.upper()}]"
+
+            _print(f"\n{'=' * 56}")
+            _print(f"  INCIDENT {tag}")
+            _print(f"  ID:       {incident_id[:12]}...")
+            _print(f"  Type:     {atype} ({severity})")
+            _print(f"  Resource: {resource}")
+            _print(f"  Action:   {plan.get('action', '?')} (blast={plan.get('blast_radius', '?')})")
+            _print(f"  Status:   {exec_status}")
+            explanation = entry.get("explanation", "")
+            if explanation:
+                _print(f"  Summary:  {explanation[:200]}")
+            _print(f"{'=' * 56}\n")
         time.sleep(2)
 
 
@@ -145,18 +160,24 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    _print("[demo] starting one-click demo runner")
+    _print("=" * 64)
+    _print("  K8sWhisperer -- Autonomous Kubernetes Incident Response")
+    _print("  DevOps x AI/ML Hackathon Demo")
+    _print("=" * 64)
+    _print("")
+
     public_base_url = _read_env_var("K8SWHISPERER_PUBLIC_BASE_URL")
     if public_base_url:
-        _print(f"[demo] public callback base: {public_base_url}")
+        _print(f"[config] Slack callback URL: {public_base_url}")
     else:
-        _print("[demo] public callback base not set (Slack buttons may not work externally).")
+        _print("[config] No external callback URL set (use browser dashboard for approvals)")
 
     if args.reset_audit:
         AUDIT_LOG.write_text("[]\n", encoding="utf-8")
-        _print(f"[demo] reset audit log: {AUDIT_LOG}")
+        _print("[config] Audit log reset")
 
     if not args.skip_apply:
+        _print("\n[setup] Applying RBAC + scenario manifests to cluster...")
         _apply_demo_manifests()
 
     stop_event = threading.Event()
@@ -164,9 +185,14 @@ def main() -> int:
     watcher.start()
 
     backend = _start_backend()
-    _print("[demo] backend started (run.py).")
-    _print("[demo] dashboard: http://localhost:9000/dashboard")
-    _print("[demo] press Ctrl+C to stop demo.\n")
+    _print("")
+    _print("-" * 64)
+    _print("  DASHBOARD:  http://localhost:9000/dashboard")
+    _print("  APPROVE:    http://localhost:9000/approve/<incident_id>")
+    _print("  REJECT:     http://localhost:9000/reject/<incident_id>")
+    _print("-" * 64)
+    _print("")
+    _print("[agent] Monitoring cluster... (Ctrl+C to stop)\n")
 
     try:
         assert backend.stdout is not None
@@ -175,15 +201,17 @@ def main() -> int:
             print(line, flush=True)
 
             if "[hitl] requesting human approval" in line:
-                _print("\a[demo][HITL] ACTION REQUIRED: approve/reject in Slack now.")
+                _print("\a")
+                _print("*" * 56)
+                _print("  HUMAN APPROVAL REQUIRED")
+                _print("  Approve via dashboard: http://localhost:9000/dashboard")
                 if public_base_url:
-                    _print(
-                        f"[demo][HITL] callback base: {public_base_url}/webhook/slack/approve/<incident_id>"
-                    )
+                    _print(f"  Or via Slack buttons")
+                _print("*" * 56)
             elif "[webhook] decision received:" in line:
-                _print(f"[demo][HITL] decision callback received: {line}")
+                _print(f"[HITL] Decision received: {line.split('decision received:')[-1].strip()}")
             elif "resume completed" in line and "[webhook] incident" in line:
-                _print(f"[demo][HITL] resume completed: {line}")
+                _print(f"[HITL] Pipeline resumed after approval")
 
             if backend.poll() is not None:
                 break

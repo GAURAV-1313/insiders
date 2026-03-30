@@ -48,6 +48,18 @@ class FixtureClusterAdapter(ClusterAdapter):
     def get_resource_state(self, resource_name: str, namespace: str) -> Dict[str, Any]:
         return {"phase": "Running", "restart_count": 0}
 
+    def patch_cpu_limit(self, pod_name: str, namespace: str, cpu_limit: str) -> str:
+        return f"deployment/{pod_name} patched with cpu={cpu_limit}"
+
+    def scan_deployments(self, namespace: str) -> List[Dict[str, Any]]:
+        return []
+
+    def scan_nodes(self) -> List[Dict[str, Any]]:
+        return []
+
+    def get_node_status(self, node_name: str) -> Dict[str, Any]:
+        return {"conditions": [], "describe": f"Node {node_name} fixture"}
+
 
 class FixtureLLMAdapter(LLMAdapter):
     def classify(self, events: List[Dict[str, Any]]) -> List[Anomaly]:

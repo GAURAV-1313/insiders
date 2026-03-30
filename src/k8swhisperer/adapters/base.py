@@ -29,6 +29,18 @@ class ClusterAdapter(Protocol):
     def get_resource_state(self, resource_name: str, namespace: str) -> Dict[str, Any]:
         ...
 
+    def patch_cpu_limit(self, pod_name: str, namespace: str, cpu_limit: str) -> str:
+        ...
+
+    def scan_deployments(self, namespace: str) -> List[Dict[str, Any]]:
+        ...
+
+    def scan_nodes(self) -> List[Dict[str, Any]]:
+        ...
+
+    def get_node_status(self, node_name: str) -> Dict[str, Any]:
+        ...
+
 
 class LLMAdapter(Protocol):
     def classify(self, events: List[Dict[str, Any]]) -> List[Anomaly]:

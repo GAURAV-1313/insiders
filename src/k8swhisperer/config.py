@@ -1,4 +1,11 @@
-"""Runtime configuration defaults for the orchestration layer."""
+"""Runtime configuration defaults for the orchestration layer.
+
+Safety policies:
+  - DESTRUCTIVE_ACTIONS: always require HITL approval (drain_node, delete_namespace, etc.)
+  - ALLOWED_V1_ACTIONS: safe for automation when confidence > 0.8 and blast_radius == 'low'
+  - min_auto_confidence: 0.8 threshold -- below this, route to HITL
+  - verify_backoff_seconds: exponential backoff for post-action verification (15, 30, 60, 90)
+"""
 
 from __future__ import annotations
 
@@ -18,7 +25,10 @@ DESTRUCTIVE_ACTIONS = frozenset(
     }
 )
 
-ALLOWED_V1_ACTIONS = frozenset({"restart_pod", "patch_memory_limit", "delete_pod", "explain_only"})
+ALLOWED_V1_ACTIONS = frozenset({
+    "restart_pod", "patch_memory_limit", "delete_pod", "explain_only",
+    "patch_cpu_limit",
+})
 
 
 @dataclass(frozen=True)

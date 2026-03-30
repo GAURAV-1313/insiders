@@ -1,4 +1,18 @@
-"""Execute stage implementation with verification."""
+"""Execute stage implementation with verification.
+
+Supported actions:
+  - restart_pod: delete pod, let deployment controller recreate it
+  - patch_memory_limit: increase memory on owning deployment (+50%)
+  - patch_cpu_limit: increase CPU on owning deployment (+50%)
+  - delete_pod: clean up evicted/terminated pods (safe, already dead)
+  - rollback_deployment: kubectl rollout undo (HITL-approved only)
+  - log_node_metrics: record node status for human review (never drain)
+  - explain_only: informational, no action taken
+
+Verification uses exponential backoff (15s, 30s, 60s, 90s).
+Deployment verification requires 2 consecutive healthy observations
+to prevent false positives from transient running states.
+"""
 
 from __future__ import annotations
 
@@ -109,10 +123,27 @@ def run(state: ClusterState, runtime: Runtime) -> ClusterState:
         memory_limit = str(plan.get("params", {}).get("memory_limit", "384Mi"))
         command_result = runtime.cluster.patch_memory_limit(resource, namespace, memory_limit)
         deployment_name = _deployment_name_from_pod_name(resource)
+    elif action == "patch_cpu_limit":
+        cpu_limit = str(plan.get("params", {}).get("cpu_limit", "500m"))
+        command_result = runtime.cluster.patch_cpu_limit(resource, namespace, cpu_limit)
+        deployment_name = _deployment_name_from_pod_name(resource)
     elif action == "delete_pod":
         # Evicted/terminated pods — already dead, just clean up. No deployment verification needed.
         command_result = runtime.cluster.delete_pod(resource, namespace)
         state["result"] = f"{command_result}; evicted pod cleaned up successfully"
+        state["execution_status"] = "verified"
+        return state
+    elif action == "rollback_deployment":
+        # Only reachable after HITL approval — rollback the stalled deployment
+        deployment_name = _deployment_name_from_pod_name(resource)
+        command_result = runtime.cluster._run_text(
+            ["rollout", "undo", f"deployment/{deployment_name}", "-n", namespace]
+        )
+        # Verify deployment health after rollback
+    elif action == "log_node_metrics":
+        # HITL-approved: log node status for operator review — never auto-drain
+        node_status = runtime.cluster.get_node_status(resource)
+        state["result"] = f"Node metrics logged for {resource}: {node_status.get('conditions', [])}"
         state["execution_status"] = "verified"
         return state
     else:

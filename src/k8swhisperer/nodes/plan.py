@@ -22,5 +22,11 @@ def run(state: ClusterState, runtime: Runtime) -> ClusterState:
 
     anomaly = state["anomalies"][0]
     state["plan"] = runtime.llm.plan(anomaly, state.get("diagnosis", ""))
+    plan = state["plan"]
+    runtime.log(
+        f"[plan] proposed: action={plan.get('action')} "
+        f"confidence={plan.get('confidence', 0):.0%} "
+        f"blast_radius={plan.get('blast_radius')}"
+    )
     return state
 

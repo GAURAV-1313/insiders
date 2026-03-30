@@ -122,6 +122,44 @@ def delete_evicted_pod(pod_name: str, namespace: str = "production") -> str:
 
 
 @mcp.tool()
+def patch_cpu_limit(pod_name: str, new_cpu_limit: str, namespace: str = "production") -> str:
+    """Increase the CPU limit of the Deployment owning this pod.
+
+    Use for CPU-throttled pods. Resolves the parent Deployment via ownerReferences and patches it.
+    Safe: blast_radius=low. Recommended: increase by 50% (e.g. 250m -> 375m).
+
+    Args:
+        pod_name: exact pod name from scan_cluster (must be owned by a Deployment)
+        new_cpu_limit: new CPU limit string, e.g. '375m', '500m', '1'
+        namespace: Kubernetes namespace (default: production)
+    """
+    return _get_runtime().cluster.patch_cpu_limit(pod_name, namespace, new_cpu_limit)
+
+
+@mcp.tool()
+def scan_deployments(namespace: str = "production") -> list[dict]:
+    """Scan deployments for stalled rollouts.
+
+    Returns deployment objects with replicas, updatedReplicas, and a stalled flag.
+    A stalled deployment has updatedReplicas != replicas (rollout not progressing).
+
+    Args:
+        namespace: Kubernetes namespace (default: production)
+    """
+    return _get_runtime().cluster.scan_deployments(namespace)
+
+
+@mcp.tool()
+def scan_nodes() -> list[dict]:
+    """Scan cluster nodes for NotReady conditions.
+
+    Returns node objects with resource_name and node_ready flag.
+    A NotReady node has conditions[Ready]=False.
+    """
+    return _get_runtime().cluster.scan_nodes()
+
+
+@mcp.tool()
 def get_audit_log() -> list[dict]:
     """Return all K8sWhisperer incident records from the persistent audit log.
 

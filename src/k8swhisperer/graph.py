@@ -1,4 +1,25 @@
-"""LangGraph builder and fallback-friendly workflow helpers."""
+"""LangGraph builder and fallback-friendly workflow helpers.
+
+Builds a 9-node StateGraph with conditional edges:
+
+  observe -> detect -> diagnose -> plan -> safety_gate
+                                              │
+                        ┌─────────────────────┼──────────────────────┐
+                        ▼ (auto-execute)      ▼ (HITL required)     │
+                     execute            hitl_request -> hitl_wait    │
+                        │                     │                      │
+                        │              ┌──────┴──────┐               │
+                        │              ▼ (approved)  ▼ (rejected)    │
+                        │           execute    explain_and_log       │
+                        │              │                             │
+                        ▼              ▼                             │
+                   explain_and_log ← ──┘                             │
+                        │                                            │
+                       END                                           │
+                                                                     │
+  If execute verification fails and not yet HITL-approved:           │
+     execute -> hitl_request (re-escalation) ────────────────────────┘
+"""
 
 from __future__ import annotations
 

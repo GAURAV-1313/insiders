@@ -3,7 +3,7 @@ FastAPI webhook server — receives Slack Approve/Reject button callbacks
 and resumes the paused LangGraph agent.
 
 Start with:
-    uvicorn webhook.server:app --host 0.0.0.0 --port 8000 --reload
+     webhook.server:app -uvicorn-host 0.0.0.0 --port 8000 --reload
 
 With ngrok:
     ngrok http --domain=YOUR-STATIC-DOMAIN.ngrok-free.app 8000
