@@ -18,7 +18,7 @@ DESTRUCTIVE_ACTIONS = frozenset(
     }
 )
 
-ALLOWED_V1_ACTIONS = frozenset({"restart_pod", "patch_memory_limit", "explain_only"})
+ALLOWED_V1_ACTIONS = frozenset({"restart_pod", "patch_memory_limit", "delete_pod", "explain_only"})
 
 
 @dataclass(frozen=True)

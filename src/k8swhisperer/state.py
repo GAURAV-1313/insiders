@@ -9,7 +9,7 @@ from uuid import uuid4
 
 Severity = Literal["LOW", "MED", "HIGH", "CRITICAL"]
 BlastRadius = Literal["low", "medium", "high"]
-ActionName = Literal["restart_pod", "patch_memory_limit", "explain_only"]
+ActionName = Literal["restart_pod", "patch_memory_limit", "delete_pod", "explain_only"]
 ExecutionStatus = Literal[
     "pending",
     "awaiting_approval",
@@ -50,6 +50,7 @@ class LogEntry(TypedDict, total=False):
     approved: bool
     result: str
     explanation: str
+    execution_status: str
 
 
 class ClusterState(TypedDict, total=False):
@@ -64,6 +65,7 @@ class ClusterState(TypedDict, total=False):
     audit_log: List[LogEntry]
     explanation: str
     execution_status: ExecutionStatus
+    cooldown_pods: List[str]
 
 
 def create_initial_state() -> ClusterState:
@@ -97,4 +99,5 @@ def new_log_entry(state: ClusterState) -> LogEntry:
         approved=state.get("approved", False),
         result=state.get("result", ""),
         explanation=state.get("explanation", ""),
+        execution_status=state.get("execution_status", "pending"),
     )

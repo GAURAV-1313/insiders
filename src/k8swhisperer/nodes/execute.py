@@ -109,6 +109,12 @@ def run(state: ClusterState, runtime: Runtime) -> ClusterState:
         memory_limit = str(plan.get("params", {}).get("memory_limit", "384Mi"))
         command_result = runtime.cluster.patch_memory_limit(resource, namespace, memory_limit)
         deployment_name = _deployment_name_from_pod_name(resource)
+    elif action == "delete_pod":
+        # Evicted/terminated pods — already dead, just clean up. No deployment verification needed.
+        command_result = runtime.cluster.delete_pod(resource, namespace)
+        state["result"] = f"{command_result}; evicted pod cleaned up successfully"
+        state["execution_status"] = "verified"
+        return state
     else:
         state["result"] = f"Blocked unsupported action: {action}"
         state["execution_status"] = "verification_failed"

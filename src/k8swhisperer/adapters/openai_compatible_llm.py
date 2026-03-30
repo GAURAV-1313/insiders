@@ -7,14 +7,16 @@ import logging
 from typing import Any, Dict, List
 from urllib import error, request
 
-from openai import OpenAI
+from openai import APIConnectionError, APIStatusError, OpenAI, RateLimitError
 
 from k8swhisperer.adapters.base import LLMAdapter
+
+_LLM_TRANSIENT_ERRORS = (RateLimitError, APIStatusError, APIConnectionError)
 from k8swhisperer.state import Anomaly, ClusterState, RemediationPlan
 
 logger = logging.getLogger(__name__)
 
-VALID_TYPES = {"CrashLoopBackOff", "OOMKilled", "Pending"}
+VALID_TYPES = {"CrashLoopBackOff", "OOMKilled", "Pending", "ImagePullBackOff", "Evicted"}
 VALID_SEVERITIES = {"HIGH", "MED", "LOW", "CRITICAL"}
 
 
@@ -47,7 +49,7 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
             "Classify anomalous pods from these events.\n"
             "Return a JSON array only. Each object must have exactly \n"
             "these fields and no others:\n"
-            "  type: one of exactly: CrashLoopBackOff, OOMKilled, Pending\n"
+            "  type: one of exactly: CrashLoopBackOff, OOMKilled, Pending, ImagePullBackOff, Evicted\n"
             "  severity: one of exactly: HIGH, MED, LOW, CRITICAL\n"
             "  affected_resource: copy the pod_name value exactly\n"
             "  namespace: copy the namespace value exactly\n"
@@ -59,21 +61,29 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
             "- status is Error and restart_count >= 3 with exit_code not 0 \n"
             "  \u2192 type=CrashLoopBackOff, severity=HIGH\n"
             "- status is OOMKilled OR exit_code is 137 \n"
-            "  \u2192 type=OOMKilled, severity=HIGH  \n"
+            "  \u2192 type=OOMKilled, severity=HIGH\n"
             "- status is Pending \n"
             "  \u2192 type=Pending, severity=MED\n"
+            "- status is ImagePullBackOff OR ErrImagePull \n"
+            "  \u2192 type=ImagePullBackOff, severity=HIGH\n"
+            "- status is Evicted \n"
+            "  \u2192 type=Evicted, severity=MED\n"
             "- if nothing is anomalous return []\n\n"
             f"Events:\n{events_json}"
         )
 
-        raw_response = self._client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.0,
-        ).choices[0].message.content or ""
+        try:
+            raw_response = self._client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.0,
+            ).choices[0].message.content or ""
+        except _LLM_TRANSIENT_ERRORS as exc:
+            logger.warning("LLM classify() unavailable (%s); using status-based fallback", exc)
+            return self._classify_from_status(events)
 
         cleaned = self._strip_code_fences(raw_response.strip())
         try:
@@ -124,15 +134,19 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
             "Write the root cause diagnosis now."
         )
 
-        response = self._client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.2,
-        )
-        return (response.choices[0].message.content or "").strip()
+        try:
+            response = self._client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.2,
+            )
+            return (response.choices[0].message.content or "").strip()
+        except _LLM_TRANSIENT_ERRORS as exc:
+            logger.warning("LLM diagnose() unavailable (%s); using template fallback", exc)
+            return self._fallback_diagnosis(anomaly)
 
     @staticmethod
     def _extract_memory_limit(diagnosis: str) -> str:
@@ -154,7 +168,7 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
             "You are the remediation planner for a Kubernetes incident response agent. "
             "Return only valid JSON. No markdown. No code fences. No explanation outside the JSON.\n\n"
             "Required fields:\n"
-            "  action: one of exactly: restart_pod, patch_memory_limit, explain_only\n"
+            "  action: one of exactly: restart_pod, patch_memory_limit, delete_pod, explain_only\n"
             "  target_resource: the exact pod or deployment name to act on\n"
             "  namespace: the Kubernetes namespace\n"
             "  params: a dict of action-specific parameters\n"
@@ -165,7 +179,11 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
             "  CrashLoopBackOff -> action=restart_pod, blast_radius=low, params={}\n"
             f"  OOMKilled -> action=patch_memory_limit, blast_radius=low, "
             f"params={{\"memory_limit\": \"{self._extract_memory_limit(diagnosis)}\"}}\n"
-            "  Pending -> action=explain_only, blast_radius=low, params={}\n\n"
+            "  Pending -> action=explain_only, blast_radius=low, params={}\n"
+            "  ImagePullBackOff -> action=explain_only, blast_radius=low, params={}\n"
+            "    reason: image cannot be pulled; requires human to fix image tag or registry credentials\n"
+            "  Evicted -> action=delete_pod, blast_radius=low, params={}\n"
+            "    reason: evicted pods are already stopped; deletion cleans up the dead resource\n\n"
             f"For OOMKilled: use memory_limit={self._extract_memory_limit(diagnosis)} "
             "(extracted from diagnosis — current limit + 50%)."
         )
@@ -175,14 +193,18 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
             "Return the remediation plan JSON now."
         )
 
-        response = self._client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.1,
-        )
+        try:
+            response = self._client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.1,
+            )
+        except _LLM_TRANSIENT_ERRORS as exc:
+            logger.warning("LLM plan() unavailable (%s); using rule-based fallback", exc)
+            return self._fallback_plan(anomaly)
         raw = self._strip_code_fences((response.choices[0].message.content or "").strip())
 
         try:
@@ -202,14 +224,21 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
         result = state.get("result", "")
         diagnosis = state.get("diagnosis", "")
 
-        if state.get("execution_status") in ("awaiting_approval", "rejected"):
-            action_path = "sent for human approval (HITL)"
+        execution_status = state.get("execution_status", "")
+        action = state.get("plan", {}).get("action", "explain_only")
+
+        if execution_status == "rejected":
+            action_path = "reviewed by on-call engineer and rejected — no automated action taken"
+        elif execution_status == "awaiting_approval":
+            action_path = "awaiting human approval via Slack HITL"
+        elif action == "explain_only" or execution_status == "explained":
+            action_path = "assessed as informational only — no automated action was possible; diagnosis surfaced to the team"
         elif approved is True:
             action_path = "approved by human and executed"
-        elif approved is False:
-            action_path = "rejected by human — no action taken"
+        elif execution_status in ("verified", "verification_failed"):
+            action_path = "automatically remediated without human approval"
         else:
-            action_path = "auto-executed"
+            action_path = "automatically remediated without human approval"
 
         system_prompt = (
             "You are the explanation writer for a Kubernetes incident response agent. "
@@ -237,52 +266,129 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
             "Write the incident summary now."
         )
 
-        response = self._client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.3,
-        )
-        return (response.choices[0].message.content or "").strip()
+        try:
+            response = self._client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.3,
+            )
+            return (response.choices[0].message.content or "").strip()
+        except _LLM_TRANSIENT_ERRORS as exc:
+            logger.warning("LLM explain() unavailable (%s); using template fallback", exc)
+            return self._fallback_explanation(state)
 
     def _fallback_plan(self, anomaly: Anomaly) -> RemediationPlan:
         """Return a safe default plan when LLM output cannot be parsed."""
         anomaly_type = anomaly.get("type", "")
+        resource = anomaly.get("affected_resource", "unknown")
+        namespace = anomaly.get("namespace", "default")
         if anomaly_type == "OOMKilled":
             return RemediationPlan(
                 action="patch_memory_limit",
-                target_resource=anomaly.get("affected_resource", "unknown"),
-                namespace=anomaly.get("namespace", "default"),
+                target_resource=resource,
+                namespace=namespace,
                 params={"memory_limit": "384Mi"},
-                confidence=0.7,
+                confidence=0.90,
                 blast_radius="low",
                 reason="OOMKilled — increasing memory limit by 50% as safe default.",
             )
-        if anomaly_type == "Pending":
+        if anomaly_type in ("Pending", "ImagePullBackOff"):
             return RemediationPlan(
                 action="explain_only",
-                target_resource=anomaly.get("affected_resource", "unknown"),
-                namespace=anomaly.get("namespace", "default"),
+                target_resource=resource,
+                namespace=namespace,
                 params={},
-                confidence=0.8,
+                confidence=0.90,
                 blast_radius="low",
-                reason="Pending pod — human review required.",
+                reason=f"{anomaly_type} — informational; no automated action possible.",
+            )
+        if anomaly_type == "Evicted":
+            return RemediationPlan(
+                action="delete_pod",
+                target_resource=resource,
+                namespace=namespace,
+                params={},
+                confidence=0.90,
+                blast_radius="low",
+                reason="Evicted pod — deleting dead resource to clean up.",
             )
         return RemediationPlan(
             action="restart_pod",
-            target_resource=anomaly.get("affected_resource", "unknown"),
-            namespace=anomaly.get("namespace", "default"),
+            target_resource=resource,
+            namespace=namespace,
             params={},
-            confidence=0.7,
+            confidence=0.91,
             blast_radius="low",
             reason="CrashLoopBackOff — restarting pod as safe default.",
         )
 
+    def _classify_from_status(self, events: List[Dict[str, Any]]) -> List[Anomaly]:
+        """Rule-based classifier used when the LLM is rate-limited or unreachable."""
+        anomalies: List[Anomaly] = []
+        for event in events:
+            status = str(event.get("status", ""))
+            restart = int(event.get("restart_count", 0) or 0)
+            exit_code = event.get("exit_code")
+            pod = event.get("pod_name", "unknown")
+            ns = event.get("namespace", "production")
+            if status in ("ImagePullBackOff", "ErrImagePull"):
+                anomalies.append(Anomaly(type="ImagePullBackOff", severity="HIGH",
+                    affected_resource=pod, namespace=ns, confidence=0.97))
+            elif status == "Evicted":
+                anomalies.append(Anomaly(type="Evicted", severity="MED",
+                    affected_resource=pod, namespace=ns, confidence=0.99))
+            elif status == "OOMKilled" or exit_code == 137:
+                anomalies.append(Anomaly(type="OOMKilled", severity="HIGH",
+                    affected_resource=pod, namespace=ns, confidence=0.95))
+            elif status == "CrashLoopBackOff" or (restart >= 3 and exit_code not in (None, 0)):
+                anomalies.append(Anomaly(type="CrashLoopBackOff", severity="HIGH",
+                    affected_resource=pod, namespace=ns, confidence=0.91))
+            elif status == "Pending":
+                anomalies.append(Anomaly(type="Pending", severity="MED",
+                    affected_resource=pod, namespace=ns, confidence=0.99))
+        return anomalies
+
+    def _fallback_diagnosis(self, anomaly: Anomaly) -> str:
+        """Template-based diagnosis used when the LLM is rate-limited."""
+        t = anomaly.get("type", "unknown")
+        r = anomaly.get("affected_resource", "unknown")
+        sev = anomaly.get("severity", "HIGH")
+        action_hint = {
+            "CrashLoopBackOff": "container is repeatedly crashing; check logs for startup errors",
+            "OOMKilled": "container exceeded its memory limit and was killed by the OOM killer",
+            "Pending": "pod cannot be scheduled; likely insufficient cluster resources or a node selector mismatch",
+            "ImagePullBackOff": "container image cannot be pulled; check the image name, tag, and registry credentials",
+            "Evicted": "pod was evicted by the kubelet due to node resource pressure",
+        }.get(t, "anomalous state detected")
+        return (
+            f"The pod {r} is in a {t} state ({sev} severity). "
+            f"Rule-based assessment: {action_hint}. "
+            f"LLM diagnosis was unavailable due to rate limiting — this is a deterministic fallback. "
+            f"Review pod logs and kubectl describe output for detailed evidence."
+        )
+
+    def _fallback_explanation(self, state: ClusterState) -> str:
+        """Template-based explanation used when the LLM is rate-limited."""
+        anomaly = (state.get("anomalies") or [{}])[0]
+        plan = state.get("plan", {})
+        result = state.get("result", "not recorded")
+        execution_status = state.get("execution_status", "")
+        return (
+            f"The pod {anomaly.get('affected_resource', 'unknown')} in namespace "
+            f"{anomaly.get('namespace', 'production')} experienced {anomaly.get('type', 'an anomaly')} "
+            f"({anomaly.get('severity', 'unknown')} severity). "
+            f"The remediation plan was: {plan.get('action', 'unknown')} "
+            f"with blast radius {plan.get('blast_radius', 'unknown')}. "
+            f"Execution status: {execution_status}. "
+            f"Outcome: {result}."
+        )
+
     def _validate_plan(self, data: dict, anomaly: Anomaly) -> RemediationPlan:
         """Parse LLM plan output and enforce repo schema."""
-        valid_actions = {"restart_pod", "patch_memory_limit", "explain_only"}
+        valid_actions = {"restart_pod", "patch_memory_limit", "delete_pod", "explain_only"}
         valid_blast = {"low", "medium", "high"}
 
         action = data.get("action", "")
@@ -378,6 +484,10 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
         if anomaly_type == "OOMKilled" and (status == "OOMKilled" or exit_code == 137):
             return max(confidence, 0.95)
         if anomaly_type == "Pending" and status == "Pending":
+            return max(confidence, 0.99)
+        if anomaly_type == "ImagePullBackOff" and status in ("ImagePullBackOff", "ErrImagePull"):
+            return max(confidence, 0.97)
+        if anomaly_type == "Evicted" and status == "Evicted":
             return max(confidence, 0.99)
 
         return confidence

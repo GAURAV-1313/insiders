@@ -65,7 +65,6 @@ def submit_incident_to_stellar(incident: dict) -> str:
     soroban_server = sdk.SorobanServer(TESTNET_RPC)
 
     source_account = soroban_server.load_account(keypair.public_key)
-    contract = sdk.ContractId(contract_id)
 
     anomaly = incident.get("anomaly", {})
     plan = incident.get("plan", {})
@@ -88,40 +87,37 @@ def submit_incident_to_stellar(incident: dict) -> str:
             contract_id=contract_id,
             function_name="store_incident",
             parameters=[
-                sdk.scval.to_string(incident_id),
-                sdk.scval.to_string(anomaly_type),
-                sdk.scval.to_string(severity),
-                sdk.scval.to_string(namespace),
-                sdk.scval.to_string(affected_resource),
-                sdk.scval.to_string(action),
-                sdk.scval.to_uint64(timestamp),
+                sdk.scval.from_string(incident_id),
+                sdk.scval.from_string(anomaly_type),
+                sdk.scval.from_string(severity),
+                sdk.scval.from_string(namespace),
+                sdk.scval.from_string(affected_resource),
+                sdk.scval.from_string(action),
+                sdk.scval.from_uint64(timestamp),
             ],
         )
         .set_timeout(30)
         .build()
     )
 
-    # Simulate first to get the footprint
-    simulated = soroban_server.simulate_transaction(tx)
-    if not hasattr(simulated, "transaction"):
-        raise RuntimeError(f"Simulation failed: {simulated}")
-
-    tx = sdk.utils.restore_transaction_data(tx, simulated)
+    # prepare_transaction simulates + injects the Soroban footprint (stellar-sdk ≥ 11)
+    tx = soroban_server.prepare_transaction(tx)
     tx.sign(keypair)
 
     response = soroban_server.send_transaction(tx)
     tx_hash = response.hash
 
-    # Poll until confirmed
+    # Poll until confirmed (stellar-sdk ≥ 11 uses soroban_rpc.GetTransactionStatus)
+    from stellar_sdk.soroban_rpc import GetTransactionStatus
     for _ in range(20):
         time.sleep(3)
         status = soroban_server.get_transaction(tx_hash)
-        if status.status == sdk.SorobanServer.GetTransactionStatus.SUCCESS:
+        if status.status == GetTransactionStatus.SUCCESS:
             print(f"[stellar] Incident stored on-chain!")
             print(f"[stellar] TX hash  : {tx_hash}")
             print(f"[stellar] Explorer : {EXPLORER_BASE}/tx/{tx_hash}")
             return tx_hash
-        if status.status == sdk.SorobanServer.GetTransactionStatus.FAILED:
+        if status.status == GetTransactionStatus.FAILED:
             raise RuntimeError(f"Transaction failed: {status}")
 
     raise TimeoutError(f"Transaction {tx_hash} did not confirm in time")

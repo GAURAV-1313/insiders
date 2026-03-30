@@ -23,6 +23,9 @@ class ClusterAdapter(Protocol):
     def patch_memory_limit(self, resource_name: str, namespace: str, memory_limit: str) -> str:
         ...
 
+    def delete_pod(self, pod_name: str, namespace: str) -> str:
+        ...
+
     def get_resource_state(self, resource_name: str, namespace: str) -> Dict[str, Any]:
         ...
 

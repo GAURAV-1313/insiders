@@ -17,11 +17,12 @@ class KubectlClusterAdapter(ClusterAdapter):
     need to be refined once the team finalizes the exact demo manifests.
     """
 
-    def __init__(self, kubectl_bin: str = "kubectl") -> None:
+    def __init__(self, kubectl_bin: str = "kubectl", namespace: str = "production") -> None:
         self.kubectl_bin = kubectl_bin
+        self.namespace = namespace
 
     def scan_cluster(self) -> List[Dict[str, Any]]:
-        data = self._run_json(["get", "pods", "-n", "production", "-o", "json"])
+        data = self._run_json(["get", "pods", "-n", self.namespace, "-o", "json"], timeout=15)
         items = data.get("items", [])
         return [self._normalize_pod(item) for item in items]
 
@@ -67,6 +68,14 @@ class KubectlClusterAdapter(ClusterAdapter):
             ]
         )
         return output.strip() or f"deployment/{deployment_name} patched with memory={memory_limit}"
+
+    def delete_pod(self, pod_name: str, namespace: str) -> str:
+        """Delete a terminated/evicted pod to clean it up. Safe — pod is already not running."""
+        result = self._run_completed(["delete", "pod", pod_name, "-n", namespace])
+        output = (result.stdout or result.stderr).strip()
+        if result.returncode == 0 or "NotFound" in output or "not found" in output.lower():
+            return output or f"pod/{pod_name} deleted"
+        raise RuntimeError(f"kubectl delete pod failed: {output}")
 
     def get_resource_state(self, resource_name: str, namespace: str) -> Dict[str, Any]:
         data = self._run_json(["get", "pod", resource_name, "-n", namespace, "-o", "json"])
@@ -132,6 +141,9 @@ class KubectlClusterAdapter(ClusterAdapter):
         return waiting.get("reason", "")
 
     def _extract_status(self, status: Dict[str, Any], container_statuses: List[Dict[str, Any]]) -> str:
+        # Evicted pods: phase=Failed, reason=Evicted at pod level (no container state)
+        if status.get("reason") == "Evicted":
+            return "Evicted"
         if container_statuses:
             container = container_statuses[0]
             waiting_reason = container.get("state", {}).get("waiting", {}) or {}
@@ -173,27 +185,46 @@ class KubectlClusterAdapter(ClusterAdapter):
         return "\n".join(combined)
 
     def _run_logs_command(self, args: List[str]) -> str:
-        result = self._run_completed(args)
+        result = self._run_completed(args, timeout=20)
         return result.stdout if result.returncode == 0 else ""
 
-    def _run_json(self, args: List[str]) -> Dict[str, Any]:
-        output = self._run_text(args)
-        return json.loads(output)
+    def _run_json(self, args: List[str], timeout: int = 30) -> Dict[str, Any]:
+        output = self._run_text(args, timeout=timeout)
+        try:
+            return json.loads(output)
+        except json.JSONDecodeError:
+            return {}
 
-    def _run_completed(self, args: List[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [self.kubectl_bin, *args],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
+    def _run_completed(self, args: List[str], timeout: int = 30) -> subprocess.CompletedProcess[str]:
+        try:
+            return subprocess.run(
+                [self.kubectl_bin, *args],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                f"kubectl command timed out after {timeout}s: {self.kubectl_bin} {' '.join(args)}"
+            )
+        except FileNotFoundError:
+            raise RuntimeError(
+                f"kubectl binary not found: '{self.kubectl_bin}'. "
+                "Ensure kubectl is installed and in PATH, or set K8SWHISPERER_KUBECTL_BIN."
+            )
 
-    def _run_text(self, args: List[str], allow_nonzero: bool = False) -> str:
-        result = self._run_completed(args)
+    def _run_text(self, args: List[str], allow_nonzero: bool = False, timeout: int = 30) -> str:
+        result = self._run_completed(args, timeout=timeout)
         if result.returncode != 0 and not allow_nonzero:
+            stderr = result.stderr or ""
+            if "forbidden" in stderr.lower() or "cannot" in stderr.lower():
+                raise RuntimeError(
+                    f"kubectl RBAC denied: {' '.join(args)}\n{stderr.strip()}"
+                )
             raise RuntimeError(
                 f"kubectl command failed: {' '.join(args)}\n"
                 f"stdout: {result.stdout}\n"
-                f"stderr: {result.stderr}"
+                f"stderr: {stderr}"
             )
         return result.stdout if result.stdout else result.stderr

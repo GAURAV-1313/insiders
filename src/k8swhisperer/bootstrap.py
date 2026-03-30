@@ -22,7 +22,7 @@ def _to_bool(value: str | None, default: bool = True) -> bool:
 
 
 def _log(message: str) -> None:
-    print(message)
+    print(message, flush=True)
 
 
 class _ClusterSchemaFixtureLLMAdapter(FixtureLLMAdapter):
@@ -64,13 +64,15 @@ def build_runtime_from_env() -> Runtime:
     poll_interval = int(os.getenv("K8SWHISPERER_POLL_INTERVAL_SECONDS", "30"))
     settings = Settings(poll_interval_seconds=poll_interval)
 
+    namespace = os.getenv("K8SWHISPERER_NAMESPACE", "production")
+
     if use_real_adapters:
         kubectl_bin = os.getenv("K8SWHISPERER_KUBECTL_BIN", "kubectl")
         slack_webhook_url = os.getenv("K8SWHISPERER_SLACK_WEBHOOK_URL", "")
         slack_channel = os.getenv("K8SWHISPERER_SLACK_CHANNEL")
         public_base_url = os.getenv("K8SWHISPERER_PUBLIC_BASE_URL", "")
         return Runtime(
-            cluster=KubectlClusterAdapter(kubectl_bin=kubectl_bin),
+            cluster=KubectlClusterAdapter(kubectl_bin=kubectl_bin, namespace=namespace),
             llm=_ClusterSchemaFixtureLLMAdapter(),
             notifier=SlackNotifierAdapter(
                 webhook_url=slack_webhook_url,
@@ -94,6 +96,7 @@ def build_runtime_from_env() -> Runtime:
 
     kubectl_bin = os.getenv("K8SWHISPERER_KUBECTL_BIN", "kubectl")
     # Groq fallback: if K8SWHISPERER_LLM_* vars are not set, use GROQ_API_KEY
+    # Namespace already read above
     llm_api_key = (
         os.getenv("K8SWHISPERER_LLM_API_KEY")
         or os.getenv("GROQ_API_KEY", "")
@@ -107,11 +110,12 @@ def build_runtime_from_env() -> Runtime:
         or "https://api.groq.com/openai/v1"
     )
     slack_webhook_url = os.getenv("K8SWHISPERER_SLACK_WEBHOOK_URL", "")
+    slack_bot_token = os.getenv("K8SWHISPERER_SLACK_BOT_TOKEN")
     slack_channel = os.getenv("K8SWHISPERER_SLACK_CHANNEL")
     public_base_url = os.getenv("K8SWHISPERER_PUBLIC_BASE_URL", "")
 
     return Runtime(
-        cluster=KubectlClusterAdapter(kubectl_bin=kubectl_bin),
+        cluster=KubectlClusterAdapter(kubectl_bin=kubectl_bin, namespace=namespace),
         llm=OpenAICompatibleLLMAdapter(
             api_key=llm_api_key,
             model=llm_model,
@@ -119,6 +123,7 @@ def build_runtime_from_env() -> Runtime:
         ),
         notifier=SlackNotifierAdapter(
             webhook_url=slack_webhook_url,
+            bot_token=slack_bot_token,
             channel=slack_channel,
             public_base_url=public_base_url,
         ),

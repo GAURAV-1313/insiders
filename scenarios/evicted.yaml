@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: evicted-pod
+  namespace: production
+  labels:
+    app: evicted-pod
+    scenario: evicted
+spec:
+  containers:
+  - name: disk-hog
+    image: busybox
+    command:
+    - sh
+    - -c
+    - |
+      echo "Starting disk pressure simulation..."
+      dd if=/dev/zero of=/tmp/fill bs=1M count=200 2>&1 || true
+      echo "Done filling disk, sleeping..."
+      sleep 3600
+    resources:
+      requests:
+        ephemeral-storage: "50Mi"
+      limits:
+        ephemeral-storage: "50Mi"

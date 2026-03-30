@@ -42,6 +42,9 @@ class FixtureClusterAdapter(ClusterAdapter):
     def patch_memory_limit(self, resource_name: str, namespace: str, memory_limit: str) -> str:
         return f"deployment/{resource_name} patched with memory={memory_limit}"
 
+    def delete_pod(self, pod_name: str, namespace: str) -> str:
+        return f"pod/{pod_name} deleted"
+
     def get_resource_state(self, resource_name: str, namespace: str) -> Dict[str, Any]:
         return {"phase": "Running", "restart_count": 0}
 
