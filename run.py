@@ -30,15 +30,28 @@ DECISION_PAGE = """<!DOCTYPE html>
     body {{ margin:0; min-height:100vh; display:grid; place-items:center;
            background:#0f172a; color:#e2e8f0;
            font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }}
-    .card {{ max-width:520px; margin:24px; padding:28px 32px; border-radius:16px;
+    .card {{ max-width:560px; margin:24px; padding:32px 36px; border-radius:16px;
              background:#111827; border:1px solid #1f2937;
-             box-shadow:0 18px 40px rgba(0,0,0,.28); }}
-    h1 {{ margin:0 0 12px; color:{accent}; font-size:28px; }}
-    p {{ margin:0; line-height:1.6; color:#cbd5e1; }}
-    code {{ background:#1f2937; padding:2px 6px; border-radius:6px; color:#f8fafc; }}
+             box-shadow:0 18px 40px rgba(0,0,0,.28);
+             border-top:4px solid {accent}; }}
+    .icon {{ font-size:48px; margin-bottom:12px; }}
+    h1 {{ margin:0 0 8px; color:{accent}; font-size:26px; }}
+    .subtitle {{ color:#94a3b8; font-size:14px; margin-bottom:16px; }}
+    p {{ margin:0 0 12px; line-height:1.6; color:#cbd5e1; }}
+    code {{ background:#1f2937; padding:2px 6px; border-radius:6px; color:#f8fafc; font-size:13px; }}
+    .next {{ color:#64748b; font-size:13px; margin-top:16px; padding-top:16px;
+             border-top:1px solid #1e293b; }}
+    a {{ color:#38bdf8; text-decoration:none; }}
+    a:hover {{ text-decoration:underline; }}
   </style>
 </head>
-<body><div class="card"><h1>{title}</h1><p>{body}</p></div></body>
+<body><div class="card">
+  <div class="icon">{icon}</div>
+  <h1>{title}</h1>
+  <div class="subtitle">K8sWhisperer Incident Response</div>
+  <p>{body}</p>
+  <div class="next">{next_step}<br><a href="/dashboard">Back to Dashboard</a></div>
+</div></body>
 </html>"""
 
 
@@ -52,8 +65,8 @@ class WebhookHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body.encode())
 
-    def _page(self, title, body, accent):
-        return DECISION_PAGE.format(title=title, body=body, accent=accent)
+    def _page(self, title, body, accent, icon="", next_step=""):
+        return DECISION_PAGE.format(title=title, body=body, accent=accent, icon=icon, next_step=next_step or "You can close this tab.")
 
     def _extract_incident_id(self) -> str:
         parsed = urlparse(self.path)
@@ -108,17 +121,27 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 border = "#2563eb"; status_icon = "PROCESSED"; status_cls = "st-info"
 
             approved_label = "Auto" if approved is None else ("Approved" if approved else "Rejected")
-            safe_exp = explanation[:300].replace("<", "&lt;").replace(">", "&gt;")
+            safe_exp = explanation.replace("<", "&lt;").replace(">", "&gt;")
             safe_pod = pod.replace("<", "&lt;")
-            safe_diag = diagnosis[:200].replace("<", "&lt;").replace(">", "&gt;")
+            safe_diag = diagnosis.replace("<", "&lt;").replace(">", "&gt;")
 
-            # Approve/Reject buttons for pending incidents
+            # Approve/Reject buttons for pending, or locked badge for decided
             action_buttons = ""
             if exec_status == "awaiting_approval":
                 action_buttons = f"""
               <div class="actions">
-                <a class="btn btn-approve" href="/approve/{iid}">Approve</a>
-                <a class="btn btn-reject" href="/reject/{iid}">Reject</a>
+                <button class="btn btn-approve" onclick="decide('{iid}',true,this)">Approve</button>
+                <button class="btn btn-reject" onclick="decide('{iid}',false,this)">Reject</button>
+              </div>"""
+            elif approved is True:
+                action_buttons = """
+              <div class="actions">
+                <span class="btn btn-decided btn-decided-approve">Approved</span>
+              </div>"""
+            elif approved is False:
+                action_buttons = """
+              <div class="actions">
+                <span class="btn btn-decided btn-decided-reject">Rejected</span>
               </div>"""
 
             card = f"""
@@ -135,8 +158,8 @@ class WebhookHandler(BaseHTTPRequestHandler):
             <span>Confidence: <code>{confidence:.0%}</code></span>
             <span>Approval: <code>{approved_label}</code></span>
           </div>
-          <div class="diagnosis"><strong>Diagnosis:</strong> {safe_diag}{'...' if len(diagnosis) > 200 else ''}</div>
-          <div class="explanation"><strong>Summary:</strong> {safe_exp}{'...' if len(explanation) > 300 else ''}</div>{action_buttons}
+          <div class="diagnosis"><strong>Diagnosis:</strong> {safe_diag}</div>
+          <div class="explanation"><strong>Summary:</strong> {safe_exp}</div>{action_buttons}
         </div>"""
 
             if exec_status == "awaiting_approval":
@@ -215,16 +238,51 @@ class WebhookHandler(BaseHTTPRequestHandler):
     /* Action buttons */
     .actions{{display:flex;gap:10px;margin-top:12px;}}
     .btn{{display:inline-block;padding:8px 24px;border-radius:8px;font-size:14px;
-         font-weight:600;text-decoration:none;cursor:pointer;transition:all .15s;}}
+         font-weight:600;text-decoration:none;cursor:pointer;transition:all .15s;border:none;}}
     .btn-approve{{background:#16a34a;color:#fff;}}
     .btn-approve:hover{{background:#15803d;transform:scale(1.03);}}
     .btn-reject{{background:#dc2626;color:#fff;}}
     .btn-reject:hover{{background:#b91c1c;transform:scale(1.03);}}
+    .btn:disabled{{opacity:.5;cursor:not-allowed;transform:none !important;}}
+    .btn-decided{{cursor:default;opacity:.85;pointer-events:none;}}
+    .btn-decided-approve{{background:#14532d;color:#86efac;border:1px solid #16a34a;}}
+    .btn-decided-reject{{background:#7f1d1d;color:#fca5a5;border:1px solid #dc2626;}}
 
     .empty{{color:#475569;font-style:italic;padding:40px 0;text-align:center;font-size:15px;}}
     .footer{{position:fixed;bottom:0;left:0;right:0;background:#0f172a;border-top:1px solid #1e293b;
             padding:8px 24px;font-size:11px;color:#475569;}}
   </style>
+  <script>
+  function decide(incidentId, approved, btn) {{
+    var action = approved ? 'approve' : 'reject';
+    var label = approved ? 'Approved' : 'Rejected';
+    // Disable both buttons immediately
+    var parent = btn.parentElement;
+    var buttons = parent.querySelectorAll('.btn');
+    buttons.forEach(function(b){{ b.disabled = true; b.style.opacity = '0.4'; }});
+    btn.textContent = approved ? 'Approving...' : 'Rejecting...';
+    btn.style.opacity = '1';
+    // Fire the request
+    fetch('/' + action + '/' + incidentId)
+      .then(function() {{
+        // Replace buttons with decided badge
+        parent.innerHTML = '<span class="btn btn-decided btn-decided-' + action + '">' + label + '</span>';
+        // Update the status badge in the card header
+        var card = parent.closest('.card');
+        if (card) {{
+          var statusEl = card.querySelector('.status');
+          if (statusEl) {{
+            statusEl.textContent = label.toUpperCase();
+            statusEl.className = approved ? 'status st-ok' : 'status st-reject';
+          }}
+        }}
+      }})
+      .catch(function() {{
+        btn.textContent = 'Error - retry';
+        buttons.forEach(function(b){{ b.disabled = false; b.style.opacity = '1'; }});
+      }});
+  }}
+  </script>
 </head>
 <body>
   <h1>K8sWhisperer -- Live Incident Dashboard</h1>
@@ -247,64 +305,88 @@ class WebhookHandler(BaseHTTPRequestHandler):
 </html>"""
 
     def do_GET(self):
+        if self.path == "/api/audit":
+            from k8swhisperer.audit import load_audit_log
+            entries = load_audit_log("audit_log.json")
+            body = json.dumps(entries)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body.encode())
+            return
         if self.path in ("/dashboard", "/", ""):
             self._send(200, self._render_dashboard())
         elif "/approve/" in self.path or "/reject/" in self.path:
             approved = "/approve/" in self.path
             incident_id = self._extract_incident_id()
             if not incident_id:
-                self._send(400, self._page("Bad Request", "Missing incident id in callback URL.", "#dc2626"))
+                self._send(400, self._page("Bad Request", "Missing incident id in callback URL.", "#dc2626", icon=""))
                 return
             label = "Approved" if approved else "Rejected"
             accent = "#16a34a" if approved else "#dc2626"
+            icon = "+" if approved else "x"
             print(
-                f"[webhook] decision received: incident={incident_id} action={label.lower()} path={self.path}",
+                f"[webhook] DECISION: incident={incident_id[:12]} => {label.upper()}",
                 flush=True,
             )
-            # Send response immediately so browser doesn't time out
+            if approved:
+                body = (
+                    f"Incident <code>{incident_id[:12]}...</code> has been <strong>approved</strong>.<br><br>"
+                    "The K8sWhisperer agent will now resume execution and carry out the planned remediation action. "
+                    "The result will appear on the dashboard shortly."
+                )
+                next_step = "Agent is executing the approved action now. Check the dashboard for results."
+            else:
+                body = (
+                    f"Incident <code>{incident_id[:12]}...</code> has been <strong>rejected</strong>.<br><br>"
+                    "The K8sWhisperer agent will skip execution and log this incident as rejected. "
+                    "No automated action will be taken on the cluster."
+                )
+                next_step = "No action taken. The incident is logged as rejected."
+
             self._send(200, self._page(
-                f"{label}!",
-                f"Incident <code>{incident_id}</code> was {label.lower()}. "
-                "K8sWhisperer will resume execution now.",
-                accent
+                f"Decision: {label}",
+                body,
+                accent,
+                icon=icon,
+                next_step=next_step,
             ))
             # Resume graph in background thread
             def _resume():
                 config = {"configurable": {"thread_id": incident_id}}
                 try:
-                    if hasattr(graph, "get_state"):
-                        try:
-                            before = graph.get_state(config=config)
-                            print(
-                                f"[webhook] pre-resume state: incident={incident_id} next={getattr(before, 'next', None)}",
-                                flush=True,
-                            )
-                        except Exception as e:
-                            print(f"[webhook] pre-resume state read failed for {incident_id}: {e}", flush=True)
+                    print(f"[webhook] resuming pipeline for incident {incident_id[:12]}...", flush=True)
                     result = graph.invoke(
                         Command(resume={"approved": approved}),
                         config=config,
                     )
                     status = result.get("execution_status") if isinstance(result, dict) else "unknown"
-                    print(
-                        f"[webhook] incident {incident_id} {label.lower()} resume completed "
-                        f"(execution_status={status})",
-                        flush=True,
-                    )
-                    if hasattr(graph, "get_state"):
-                        try:
-                            after = graph.get_state(config=config)
-                            print(
-                                f"[webhook] post-resume state: incident={incident_id} next={getattr(after, 'next', None)}",
-                                flush=True,
-                            )
-                        except Exception as e:
-                            print(f"[webhook] post-resume state read failed for {incident_id}: {e}", flush=True)
+                    action = result.get("plan", {}).get("action", "?") if isinstance(result, dict) else "?"
+                    if approved:
+                        print(
+                            f"[webhook] incident {incident_id[:12]} APPROVED and executed "
+                            f"(action={action}, status={status})",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            f"[webhook] incident {incident_id[:12]} REJECTED -- no action taken "
+                            f"(status={status})",
+                            flush=True,
+                        )
                 except Exception as e:
-                    print(f"[webhook] resume error for {incident_id}: {e}", flush=True)
+                    print(f"[webhook] resume error for {incident_id[:12]}: {e}", flush=True)
             threading.Thread(target=_resume, daemon=True).start()
         else:
             self._send(404, "Not found")
+
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
 
     def do_POST(self):
         if self.path == "/webhook/slack":

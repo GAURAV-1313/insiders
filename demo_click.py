@@ -127,7 +127,7 @@ def _watch_explanations(stop_event: threading.Event) -> None:
             _print(f"  Status:   {exec_status}")
             explanation = entry.get("explanation", "")
             if explanation:
-                _print(f"  Summary:  {explanation[:200]}")
+                _print(f"  Summary:  {explanation}")
             _print(f"{'=' * 56}\n")
         time.sleep(2)
 

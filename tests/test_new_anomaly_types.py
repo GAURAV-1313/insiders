@@ -53,20 +53,20 @@ class TestCPUThrottlingPlan(unittest.TestCase):
                           affected_resource="web-abc", namespace="production", confidence=0.90)
         plan = adapter._fallback_plan(anomaly)
         self.assertEqual(plan["action"], "patch_cpu_limit")
-        self.assertEqual(plan["blast_radius"], "low")
+        self.assertEqual(plan["blast_radius"], "medium")
         self.assertIn("cpu_limit", plan["params"])
 
 
 class TestCPUThrottlingSafetyGate(unittest.TestCase):
-    def test_cpu_throttling_auto_executes_when_safe(self):
-        """patch_cpu_limit is in ALLOWED_V1_ACTIONS with low blast_radius → auto-execute."""
+    def test_cpu_throttling_routes_to_hitl(self):
+        """patch_cpu_limit with blast_radius=medium routes to HITL (rolling restart risk)."""
         runtime = _make_runtime()
         plan = RemediationPlan(
-            action="patch_cpu_limit", confidence=0.90, blast_radius="low",
+            action="patch_cpu_limit", confidence=0.90, blast_radius="medium",
             target_resource="web-abc", namespace="production", params={"cpu_limit": "500m"},
         )
         route = determine_route(plan, runtime)
-        self.assertEqual(route, "execute")
+        self.assertEqual(route, "hitl")
 
 
 class TestExtractCpuLimit(unittest.TestCase):

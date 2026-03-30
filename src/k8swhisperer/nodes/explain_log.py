@@ -10,40 +10,70 @@ from k8swhisperer.runtime import Runtime
 from k8swhisperer.state import ClusterState, new_log_entry
 
 
-def _submit_to_stellar(entry: dict, audit_log_path: str) -> None:
-    """Fire-and-forget: submit incident to Stellar blockchain if keys are configured."""
+def _find_stellar_hook() -> str | None:
+    """Locate stellar_hook.py relative to CWD or project root."""
+    candidates = [
+        os.path.join(os.getcwd(), "stellar", "stellar_hook.py"),
+        os.path.join(os.path.dirname(__file__), "..", "..", "..", "stellar", "stellar_hook.py"),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return os.path.abspath(path)
+    return None
+
+
+def _submit_to_stellar(entry: dict) -> None:
+    """Submit incident to Stellar blockchain. Runs in a daemon thread."""
     secret_key = os.environ.get("STELLAR_SECRET_KEY", "")
-    contract_id = os.environ.get(
-        "STELLAR_CONTRACT_ID",
-        "CAVBWCYJP2AXAEUJCAW3AUTBKZ2TUHZXIVGJET66PZECJQDDZ3YU7RAP",
-    )
     if not secret_key:
         return
+
+    incident_id = entry.get("incident_id", "?")[:12]
+    anomaly = entry.get("anomaly", {})
+    plan = entry.get("plan", {})
+
+    print(
+        f"[stellar] submitting incident {incident_id} to Stellar blockchain...",
+        flush=True,
+    )
+    print(
+        f"[stellar]   type={anomaly.get('type', '?')} "
+        f"action={plan.get('action', '?')} "
+        f"resource={anomaly.get('affected_resource', '?')}",
+        flush=True,
+    )
+
+    hook_path = _find_stellar_hook()
+    if not hook_path:
+        print("[stellar] stellar_hook.py not found -- skipping", flush=True)
+        return
+
     try:
-        import sys
-        stellar_hook_path = os.path.join(
-            os.path.dirname(audit_log_path), "stellar", "stellar_hook.py"
-        )
-        if not os.path.exists(stellar_hook_path):
-            # Try relative to CWD
-            stellar_hook_path = os.path.join(os.getcwd(), "stellar", "stellar_hook.py")
-        if not os.path.exists(stellar_hook_path):
-            return
         import importlib.util
-        spec = importlib.util.spec_from_file_location("stellar_hook", stellar_hook_path)
+        spec = importlib.util.spec_from_file_location("stellar_hook", hook_path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        os.environ.setdefault("STELLAR_CONTRACT_ID", contract_id)
+
         tx_hash = mod.submit_incident_to_stellar(entry)
-        print(f"[stellar] incident {entry.get('incident_id', '')[:8]} on-chain: {tx_hash}")
+
+        print(f"[stellar] ON-CHAIN: incident {incident_id} stored successfully", flush=True)
+        print(f"[stellar]   TX hash : {tx_hash}", flush=True)
+        print(
+            f"[stellar]   Explorer: https://stellar.expert/explorer/testnet/tx/{tx_hash}",
+            flush=True,
+        )
+    except ImportError as exc:
+        print(f"[stellar] stellar-sdk not installed ({exc}) -- pip install stellar-sdk", flush=True)
+    except KeyError as exc:
+        print(f"[stellar] missing env var: {exc} -- check .env", flush=True)
     except Exception as exc:
-        print(f"[stellar] submission skipped: {exc}")
+        print(f"[stellar] submission failed: {exc}", flush=True)
 
 
 def run(state: ClusterState, runtime: Runtime) -> ClusterState:
     runtime.log("[explain] generating human-readable summary")
     state["explanation"] = runtime.llm.explain(state)
-    runtime.log(f"[explain] {state['explanation'][:150]}...")
+    runtime.log(f"[explain] {state['explanation']}")
     entry = new_log_entry(state)
     # Always load from disk so multi-anomaly dispatch accumulates entries correctly
     from k8swhisperer.audit import load_audit_log
@@ -53,11 +83,17 @@ def run(state: ClusterState, runtime: Runtime) -> ClusterState:
         existing,
         entry,
     )
-    # Auto-submit to Stellar blockchain (non-blocking, if STELLAR_SECRET_KEY is set)
-    threading.Thread(
-        target=_submit_to_stellar,
-        args=(entry, runtime.settings.audit_log_path),
-        daemon=True,
-    ).start()
+
+    # Auto-submit to Stellar blockchain (non-blocking daemon thread)
+    if os.environ.get("STELLAR_SECRET_KEY"):
+        runtime.log("[explain] queuing Stellar blockchain submission...")
+        threading.Thread(
+            target=_submit_to_stellar,
+            args=(entry,),
+            daemon=True,
+        ).start()
+    else:
+        runtime.log("[explain] Stellar submission skipped (STELLAR_SECRET_KEY not set)")
+
     return state
 

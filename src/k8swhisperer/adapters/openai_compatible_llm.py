@@ -197,16 +197,17 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
             "  reason: one sentence explaining why this action addresses the root cause\n\n"
             "Action selection rules:\n"
             "  CrashLoopBackOff -> action=restart_pod, blast_radius=low, params={}\n"
-            f"  OOMKilled -> action=patch_memory_limit, blast_radius=low, "
+            f"  OOMKilled -> action=patch_memory_limit, blast_radius=medium, "
             f"params={{\"memory_limit\": \"{self._extract_memory_limit(diagnosis)}\"}}\n"
+            "    reason: patching memory triggers a rolling restart — medium blast, requires HITL\n"
             "  Pending -> action=explain_only, blast_radius=low, params={}\n"
             "  ImagePullBackOff -> action=explain_only, blast_radius=low, params={}\n"
             "    reason: image cannot be pulled; requires human to fix image tag or registry credentials\n"
             "  Evicted -> action=delete_pod, blast_radius=low, params={}\n"
             "    reason: evicted pods are already stopped; deletion cleans up the dead resource\n"
-            f"  CPUThrottling -> action=patch_cpu_limit, blast_radius=low, "
+            f"  CPUThrottling -> action=patch_cpu_limit, blast_radius=medium, "
             f"params={{\"cpu_limit\": \"{self._extract_cpu_limit(diagnosis)}\"}}\n"
-            "    reason: container is CPU-throttled; increasing CPU limit to reduce throttling\n"
+            "    reason: patching CPU triggers a rolling restart — medium blast, requires HITL\n"
             "  DeploymentStalled -> action=rollback_deployment, blast_radius=high, params={}\n"
             "    reason: rollout is stuck; rollback requires human approval (HITL)\n"
             "  NodeNotReady -> action=log_node_metrics, blast_radius=high, params={}\n"
@@ -321,8 +322,8 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
                 namespace=namespace,
                 params={"memory_limit": "384Mi"},
                 confidence=0.90,
-                blast_radius="low",
-                reason="OOMKilled — increasing memory limit by 50% as safe default.",
+                blast_radius="medium",
+                reason="OOMKilled — patching memory triggers rolling restart; requires human approval.",
             )
         if anomaly_type in ("Pending", "ImagePullBackOff"):
             return RemediationPlan(
@@ -351,8 +352,8 @@ class OpenAICompatibleLLMAdapter(LLMAdapter):
                 namespace=namespace,
                 params={"cpu_limit": "500m"},
                 confidence=0.90,
-                blast_radius="low",
-                reason="CPU throttling detected — increasing CPU limit by 50%.",
+                blast_radius="medium",
+                reason="CPU throttling — patching CPU triggers rolling restart; requires human approval.",
             )
         if anomaly_type == "DeploymentStalled":
             return RemediationPlan(

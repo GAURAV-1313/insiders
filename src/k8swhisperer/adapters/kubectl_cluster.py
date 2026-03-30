@@ -106,9 +106,16 @@ class KubectlClusterAdapter(ClusterAdapter):
         return output.strip() or f"deployment/{deployment_name} patched with cpu={cpu_limit}"
 
     def scan_deployments(self, namespace: str) -> List[Dict[str, Any]]:
-        """Return deployment-level events for DeploymentStalled detection."""
+        """Return deployment-level events for DeploymentStalled detection.
+
+        A deployment is only flagged as stalled if updatedReplicas != replicas
+        AND the deployment has existed for at least 3 minutes (avoids false
+        positives during normal rollout startup).
+        """
+        import datetime
         data = self._run_json(["get", "deployments", "-n", namespace, "-o", "json"], timeout=15)
         events: List[Dict[str, Any]] = []
+        now = datetime.datetime.now(datetime.timezone.utc)
         for item in data.get("items", []):
             metadata = item.get("metadata", {})
             spec = item.get("spec", {})
@@ -116,7 +123,18 @@ class KubectlClusterAdapter(ClusterAdapter):
             desired = spec.get("replicas", 0)
             updated = status.get("updatedReplicas", 0) or 0
             available = status.get("availableReplicas", 0) or 0
-            stalled = desired > 0 and updated != desired
+
+            # Only flag as stalled if deployment is old enough (>3 min)
+            created_str = metadata.get("creationTimestamp", "")
+            age_seconds = 0
+            try:
+                created = datetime.datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+                age_seconds = (now - created).total_seconds()
+            except (ValueError, TypeError):
+                pass
+
+            stalled = desired > 0 and updated != desired and age_seconds > 180
+
             events.append({
                 "kind": "deployment",
                 "resource_name": metadata.get("name", ""),

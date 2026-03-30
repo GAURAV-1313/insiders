@@ -29,7 +29,8 @@ const ANOMALY_ICONS = {
   NodeNotReady: "NOD",
 };
 
-export default function IncidentCard({ incident, txHash }) {
+export default function IncidentCard({ incident, txHash, mode = "dark" }) {
+  const light = mode === "light";
   const sev = SEVERITY_STYLES[incident.severity] || SEVERITY_STYLES.MED;
   const actionInfo = ACTION_LABELS[incident.action] || { label: incident.action, color: "text-slate-400" };
   const icon = ANOMALY_ICONS[incident.anomaly_type] || "?";
@@ -37,7 +38,7 @@ export default function IncidentCard({ incident, txHash }) {
   const timeStr = isNaN(ts.getTime()) ? "N/A" : ts.toLocaleString();
 
   return (
-    <div className={`bg-slate-900 rounded-xl border ${sev.border} hover:border-sky-500/50 transition-all duration-200 overflow-hidden group`}>
+    <div className={`${light ? "bg-white shadow-sm" : "bg-slate-900"} rounded-xl border ${sev.border} hover:border-sky-500/50 transition-all duration-200 overflow-hidden group`}>
       {/* Severity accent bar */}
       <div className={`h-1 ${sev.badge}`} />
 
@@ -49,10 +50,10 @@ export default function IncidentCard({ incident, txHash }) {
               <span className={`text-xs font-bold ${sev.text}`}>{icon}</span>
             </div>
             <div>
-              <p className="text-white font-semibold text-sm leading-tight">
+              <p className={`${light ? "text-gray-900" : "text-white"} font-semibold text-sm leading-tight`}>
                 {incident.anomaly_type}
               </p>
-              <p className="text-slate-500 text-xs">{incident.namespace}</p>
+              <p className={`${light ? "text-gray-400" : "text-slate-500"} text-xs`}>{incident.namespace}</p>
             </div>
           </div>
           <span className={`${sev.badge} text-white text-[10px] font-bold px-2.5 py-1 rounded-full`}>
@@ -61,24 +62,41 @@ export default function IncidentCard({ incident, txHash }) {
         </div>
 
         {/* Resource */}
-        <div className="bg-slate-800/50 rounded-lg px-3 py-2 mb-3">
-          <p className="text-[10px] text-slate-500 uppercase tracking-wider">Affected Resource</p>
-          <p className="text-white text-sm font-mono truncate">{incident.affected_resource}</p>
+        <div className={`${light ? "bg-gray-50" : "bg-slate-800/50"} rounded-lg px-3 py-2 mb-3`}>
+          <p className={`text-[10px] ${light ? "text-gray-400" : "text-slate-500"} uppercase tracking-wider`}>Affected Resource</p>
+          <p className={`${light ? "text-gray-900" : "text-white"} text-sm font-mono truncate`}>{incident.affected_resource}</p>
         </div>
 
         {/* Action + metadata */}
-        <div className="flex items-center gap-2 mb-3">
-          <span className={`text-xs font-medium ${actionInfo.color} bg-slate-800 px-2.5 py-1 rounded-md`}>
+        <div className="flex items-center gap-2 mb-3 flex-wrap">
+          <span className={`text-xs font-medium ${actionInfo.color} ${light ? "bg-gray-100" : "bg-slate-800"} px-2.5 py-1 rounded-md`}>
             {actionInfo.label}
           </span>
-          <span className="text-xs text-slate-600">by K8sWhisperer agent</span>
+          <span className={`text-xs ${light ? "text-gray-400" : "text-slate-600"}`}>by K8sWhisperer agent</span>
+          {incident.execution_status && (
+            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+              incident.execution_status === "verified" ? "bg-green-950 text-green-400" :
+              incident.execution_status === "rejected" ? "bg-red-950 text-red-400" :
+              incident.execution_status === "awaiting_approval" ? "bg-yellow-950 text-yellow-400" :
+              "bg-slate-800 text-slate-400"
+            }`}>
+              {incident.execution_status.toUpperCase()}
+            </span>
+          )}
         </div>
 
+        {/* Diagnosis/explanation (if from agent) */}
+        {incident.explanation && (
+          <p className={`text-xs ${light ? "text-gray-500" : "text-slate-500"} mb-3 leading-relaxed`}>
+            {incident.explanation}
+          </p>
+        )}
+
         {/* Footer */}
-        <div className="flex items-center justify-between pt-3 border-t border-slate-800">
+        <div className={`flex items-center justify-between pt-3 border-t ${light ? "border-gray-200" : "border-slate-800"}`}>
           <div>
-            <p className="text-slate-500 text-[11px]">{timeStr}</p>
-            <p className="text-slate-600 text-[10px] font-mono truncate max-w-[180px]">
+            <p className={`${light ? "text-gray-400" : "text-slate-500"} text-[11px]`}>{timeStr}</p>
+            <p className={`${light ? "text-gray-300" : "text-slate-600"} text-[10px] font-mono truncate max-w-[180px]`}>
               {incident.incident_id}
             </p>
           </div>

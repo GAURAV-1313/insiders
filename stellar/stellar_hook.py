@@ -77,6 +77,15 @@ def submit_incident_to_stellar(incident: dict) -> str:
     action = plan.get("action", "explain_only")
     timestamp = int(time.time())
 
+    # Build SCVal parameters compatible with stellar-sdk v13
+    from stellar_sdk.xdr import SCVal, SCValType, Uint64, SCString
+
+    def _str_val(s: str) -> SCVal:
+        return SCVal(type=SCValType.SCV_STRING, str=SCString(s.encode("utf-8")))
+
+    def _u64_val(n: int) -> SCVal:
+        return SCVal(type=SCValType.SCV_U64, u64=Uint64(n))
+
     tx = (
         sdk.TransactionBuilder(
             source_account=source_account,
@@ -87,13 +96,13 @@ def submit_incident_to_stellar(incident: dict) -> str:
             contract_id=contract_id,
             function_name="store_incident",
             parameters=[
-                sdk.scval.from_string(incident_id),
-                sdk.scval.from_string(anomaly_type),
-                sdk.scval.from_string(severity),
-                sdk.scval.from_string(namespace),
-                sdk.scval.from_string(affected_resource),
-                sdk.scval.from_string(action),
-                sdk.scval.from_uint64(timestamp),
+                _str_val(incident_id),
+                _str_val(anomaly_type),
+                _str_val(severity),
+                _str_val(namespace),
+                _str_val(affected_resource),
+                _str_val(action),
+                _u64_val(timestamp),
             ],
         )
         .set_timeout(30)

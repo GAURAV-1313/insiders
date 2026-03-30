@@ -83,6 +83,22 @@ class SlackNotifierAdapter(NotifierAdapter):
         approve_url = self._decision_url(state["incident_id"], approved=True)
         reject_url = self._decision_url(state["incident_id"], approved=False)
 
+        confidence = plan.get("confidence", 0)
+        blast_radius = plan.get("blast_radius", "unknown")
+        anomaly_type = anomaly.get("type", "unknown")
+
+        # Build reason why HITL was triggered
+        reasons = []
+        if anomaly_type == "NodeNotReady":
+            reasons.append("NodeNotReady always requires human approval")
+        if blast_radius != "low":
+            reasons.append(f"blast_radius is `{blast_radius}` (not low)")
+        if isinstance(confidence, (int, float)) and confidence <= 0.8:
+            reasons.append(f"confidence is `{confidence:.0%}` (below 80% threshold)")
+        if plan.get("action") in ("rollback_deployment", "log_node_metrics"):
+            reasons.append(f"`{plan.get('action')}` is not an auto-executable action")
+        reason_text = " | ".join(reasons) if reasons else "Action requires human verification"
+
         payload: Dict[str, Any] = {
             "text": f"K8sWhisperer approval required for incident {state['incident_id']}",
             "blocks": [
@@ -91,11 +107,14 @@ class SlackNotifierAdapter(NotifierAdapter):
                     "text": {
                         "type": "mrkdwn",
                         "text": (
-                            f"*Approval required*\n"
-                            f"*Incident:* `{state['incident_id']}`\n"
-                            f"*Anomaly:* `{anomaly.get('type', 'unknown')}` on `{anomaly.get('affected_resource', 'unknown')}`\n"
-                            f"*Diagnosis:* {state.get('diagnosis', 'n/a')}\n"
-                            f"*Plan:* `{plan.get('action', 'unknown')}` with blast radius `{plan.get('blast_radius', 'unknown')}`"
+                            f"*K8sWhisperer -- Human Approval Required*\n\n"
+                            f"*Incident:* `{state['incident_id'][:12]}...`\n"
+                            f"*Anomaly:* `{anomaly_type}` (`{anomaly.get('severity', '?')}`) on `{anomaly.get('affected_resource', 'unknown')}`\n"
+                            f"*Namespace:* `{anomaly.get('namespace', 'production')}`\n\n"
+                            f"*Diagnosis:* {state.get('diagnosis', 'n/a')[:300]}\n\n"
+                            f"*Proposed Action:* `{plan.get('action', 'unknown')}`\n"
+                            f"*Confidence:* `{confidence:.0%}` | *Blast Radius:* `{blast_radius}`\n\n"
+                            f"*Why HITL:* {reason_text}"
                         ),
                     },
                 },
